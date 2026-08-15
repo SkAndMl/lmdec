@@ -29,26 +29,33 @@ def _walk_fsm(
     return state
 
 
+def _build_state_to_valid_tokens_map(
+    fsm: FSM, id_to_str: dict[int, str], eos_token_id: int
+) -> dict[int, dict[int, int]]:
+
+    state_to_valid_tokens_map: dict[int, dict[int, int]] = {}
+
+    for state in fsm.states:
+        state_to_valid_tokens_map[state] = {}
+        for token_id, token in id_to_str.items():
+            if (next_state := _walk_fsm(state, fsm, token)) is not None:
+                state_to_valid_tokens_map[state][token_id] = next_state
+
+        if state in fsm.finals:
+            state_to_valid_tokens_map[state][eos_token_id] = state
+
+    return state_to_valid_tokens_map
+
+
 def _mask_logits(
-    fsm: FSM,
-    current_fsm_state: int,
     logits: torch.Tensor,
-    id_to_str: dict[int, str],
-    eos_token_id: int,
-) -> tuple[torch.Tensor, dict[int, int]]:
-
-    valid_ids: dict[int, int] = {}
-    for token_id, token in id_to_str.items():
-        if (next_state := _walk_fsm(current_fsm_state, fsm, token)) is not None:
-            valid_ids[token_id] = next_state
-
-    if current_fsm_state in fsm.finals:
-        valid_ids[eos_token_id] = current_fsm_state
+    valid_ids: dict[int, int],
+) -> torch.Tensor:
 
     mask = torch.zeros_like(logits, dtype=bool)
     mask[:, list(valid_ids.keys())] = 1
     masked_logits = logits.masked_fill(~mask, -float("inf"))
-    return masked_logits, valid_ids
+    return masked_logits
 
 
 def regex_generate(
@@ -67,6 +74,11 @@ def regex_generate(
 
     id_to_str = _build_id_to_str(tokenizer)
     fsm = interegular.parse_pattern(regex).to_fsm()
+    state_to_valid_tokens_map = _build_state_to_valid_tokens_map(
+        fsm,
+        id_to_str,
+        tokenizer.eos_token_id,
+    )
     current_fsm_state = fsm.initial
 
     for _ in range(max_new_tokens):
@@ -75,12 +87,9 @@ def regex_generate(
             logits: torch.Tensor = outputs.logits
             next_token_logits = logits[:, -1, :]
 
-            masked_logits, valid_ids = _mask_logits(
-                fsm=fsm,
-                current_fsm_state=current_fsm_state,
+            masked_logits = _mask_logits(
                 logits=next_token_logits,
-                id_to_str=id_to_str,
-                eos_token_id=tokenizer.eos_token_id,
+                valid_ids=state_to_valid_tokens_map[current_fsm_state],
             )
             next_tokens = masked_logits.argmax(dim=-1, keepdim=True)
 
@@ -88,7 +97,7 @@ def regex_generate(
             if next_token == tokenizer.eos_token_id:
                 break
 
-            current_fsm_state = valid_ids[next_token]
+            current_fsm_state = state_to_valid_tokens_map[current_fsm_state][next_token]
             generated += id_to_str[next_token]
 
             if current_fsm_state in fsm.finals and len(fsm.map[current_fsm_state]) == 0:
