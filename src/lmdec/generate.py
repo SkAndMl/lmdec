@@ -13,34 +13,42 @@ def _build_id_to_str(tokenizer: AutoTokenizer) -> dict[int, str]:
     return id_to_str
 
 
-def _mask_logits(
-    generated: str,
+def _walk_fsm(
+    state: int,
     fsm: FSM,
+    text: str,
+) -> int | None:
+
+    for ch in text:
+        symbol = fsm.alphabet[ch]
+        if symbol not in fsm.map[state]:
+            return None
+
+        state = fsm.map[state][symbol]
+
+    return state
+
+
+def _mask_logits(
+    fsm: FSM,
+    current_fsm_state: int,
     logits: torch.Tensor,
     id_to_str: dict[int, str],
-    eot_id: int,
-) -> torch.Tensor:
+    eos_token_id: int,
+) -> tuple[torch.Tensor, dict[int, int]]:
 
-    def _is_valid_token(token: str) -> bool:
-        text = generated + token
-        state = fsm.initial
-        for ch in text:
-            symbol = fsm.alphabet[ch]
-            if symbol not in fsm.map[state]:
-                return False
-            state = fsm.map[state][symbol]
-
-        return True
-
-    valid_ids = [eot_id]
+    valid_ids: dict[int, int] = {}
     for token_id, token in id_to_str.items():
-        if _is_valid_token(token):
-            valid_ids.append(token_id)
+        if (next_state := _walk_fsm(current_fsm_state, fsm, token)) is not None:
+            valid_ids[token_id] = next_state
+
+    if current_fsm_state in fsm.finals:
+        valid_ids[eos_token_id] = current_fsm_state
 
     mask = torch.zeros_like(logits, dtype=bool)
-    mask[:, valid_ids] = 1
+    mask[:, list(valid_ids.keys())] = 1
     masked_logits = logits.masked_fill(~mask, -float("inf"))
-    return masked_logits
+    return masked_logits, valid_ids
 
 
 def regex_generate(
@@ -48,6 +56,7 @@ def regex_generate(
     tokenizer: AutoTokenizer,
     prompt: str,
     regex: str,
+    max_new_tokens: int = 64,
 ) -> str:
 
     if not hasattr(tokenizer, "eos_token_id"):
@@ -58,18 +67,20 @@ def regex_generate(
 
     id_to_str = _build_id_to_str(tokenizer)
     fsm = interegular.parse_pattern(regex).to_fsm()
+    current_fsm_state = fsm.initial
 
-    while True:
+    for _ in range(max_new_tokens):
         with torch.inference_mode():
             outputs = model(**model_inputs)
             logits: torch.Tensor = outputs.logits
             next_token_logits = logits[:, -1, :]
-            masked_logits = _mask_logits(
-                generated=generated,
+
+            masked_logits, valid_ids = _mask_logits(
                 fsm=fsm,
+                current_fsm_state=current_fsm_state,
                 logits=next_token_logits,
                 id_to_str=id_to_str,
-                eot_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
             )
             next_tokens = masked_logits.argmax(dim=-1, keepdim=True)
 
@@ -77,7 +88,11 @@ def regex_generate(
             if next_token == tokenizer.eos_token_id:
                 break
 
+            current_fsm_state = valid_ids[next_token]
             generated += id_to_str[next_token]
+
+            if current_fsm_state in fsm.finals and len(fsm.map[current_fsm_state]) == 0:
+                break
 
             model_inputs["input_ids"] = torch.cat(
                 (
