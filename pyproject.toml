@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "interegular>=0.3.3",
     "regex>=2026.7.19",
     "torch>=2.13.0",
     "transformers>=5.15.0",

@@ -1,5 +1,5 @@
-from .generate import constrained_generation
+from .generate import regex_generate
 
 __all__ = [
-    "constrained_generation",
+    "regex_generate",
 ]
