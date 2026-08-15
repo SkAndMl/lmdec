@@ -1,0 +1,23 @@
+[project]
+name = "lmdec"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Sathya Krishnan", email = "ts.sathyakrishnan2002@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "regex>=2026.7.19",
+    "torch>=2.13.0",
+    "transformers>=5.15.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.3",
+]
