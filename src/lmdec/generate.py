@@ -69,9 +69,6 @@ def regex_generate(
     if not hasattr(tokenizer, "eos_token_id"):
         raise TypeError("tokenizer does not have 'eos_token_id'")
 
-    model_inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
-    generated = ""
-
     id_to_str = _build_id_to_str(tokenizer)
     fsm = interegular.parse_pattern(regex).to_fsm()
     state_to_valid_tokens_map = _build_state_to_valid_tokens_map(
@@ -81,10 +78,25 @@ def regex_generate(
     )
     current_fsm_state = fsm.initial
 
+    model_inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+    input_ids = model_inputs["input_ids"]
+    attention_mask = model_inputs["attention_mask"]
+
+    past_key_values = None
+    generated = ""
+
     for _ in range(max_new_tokens):
         with torch.inference_mode():
-            outputs = model(**model_inputs)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+                past_key_values=past_key_values,
+            )
+
             logits: torch.Tensor = outputs.logits
+            past_key_values = outputs.past_key_values
+
             next_token_logits = logits[:, -1, :]
 
             masked_logits = _mask_logits(
@@ -103,15 +115,17 @@ def regex_generate(
             if current_fsm_state in fsm.finals and len(fsm.map[current_fsm_state]) == 0:
                 break
 
-            model_inputs["input_ids"] = torch.cat(
+            input_ids = next_tokens
+            attention_mask = torch.cat(
                 (
-                    model_inputs["input_ids"],
-                    next_tokens,
+                    attention_mask,
+                    torch.ones(
+                        (attention_mask.shape[0], 1),
+                        dtype=attention_mask.dtype,
+                        device=model.device,
+                    ),
                 ),
                 dim=-1,
-            )
-            model_inputs["attention_mask"] = torch.ones_like(
-                model_inputs["input_ids"], device=model.device
             )
 
     return generated
