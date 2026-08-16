@@ -1,7 +1,7 @@
 [project]
 name = "lmdec"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.1"
+description = "Language model decoding algorithms and inference optimization experiments"
 readme = "README.md"
 authors = [
     { name = "Sathya Krishnan", email = "ts.sathyakrishnan2002@gmail.com" }
