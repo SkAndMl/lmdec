@@ -29,34 +29,32 @@ def _walk_fsm(
     return state
 
 
-def _build_state_to_valid_tokens_map(
-    fsm: FSM, id_to_str: dict[int, str], eos_token_id: int
-) -> dict[int, dict[int, int]]:
+def _get_allowed_and_transition(
+    fsm: FSM, id_to_str: dict[int, str], vocab_size: int, eos_token_id: int
+) -> tuple[torch.Tensor, torch.Tensor]:
 
-    state_to_valid_tokens_map: dict[int, dict[int, int]] = {}
+    states = sorted(fsm.states)
 
-    for state in fsm.states:
-        state_to_valid_tokens_map[state] = {}
+    num_states = len(fsm.states)
+    allowed = torch.zeros(size=(num_states, vocab_size), dtype=bool)
+    transition = -1 * torch.ones(size=(num_states, vocab_size), dtype=torch.long)
+
+    for state in states:
+        valid_ids = []
+        next_states = []
         for token_id, token in id_to_str.items():
             if (next_state := _walk_fsm(state, fsm, token)) is not None:
-                state_to_valid_tokens_map[state][token_id] = next_state
+                valid_ids.append(token_id)
+                next_states.append(next_state)
+
+        allowed[state, valid_ids] = 1
+        transition[state, valid_ids] = torch.tensor(next_states, dtype=torch.long)
 
         if state in fsm.finals:
-            state_to_valid_tokens_map[state][eos_token_id] = state
+            allowed[state, eos_token_id] = 1
+            transition[state, eos_token_id] = state
 
-    return state_to_valid_tokens_map
-
-
-def _mask_logits(
-    logits: torch.Tensor,
-    valid_ids: list[dict[int, int]],
-) -> torch.Tensor:
-
-    mask = torch.zeros_like(logits, dtype=bool)
-    for i in range(len(valid_ids)):
-        mask[i, list(valid_ids[i].keys())] = 1
-    masked_logits = logits.masked_fill(~mask, -float("inf"))
-    return masked_logits
+    return allowed, transition
 
 
 def regex_generate(
@@ -78,11 +76,16 @@ def regex_generate(
 
     id_to_str = _build_id_to_str(tokenizer)
     fsm = interegular.parse_pattern(regex).to_fsm()
-    state_to_valid_tokens_map = _build_state_to_valid_tokens_map(
+
+    allowed, transition = _get_allowed_and_transition(
         fsm=fsm,
         id_to_str=id_to_str,
+        vocab_size=model.config.vocab_size,
         eos_token_id=tokenizer.eos_token_id,
     )
+
+    allowed = allowed.to(model.device)
+    transition = transition.to(model.device)
 
     model_inputs = tokenizer(
         prompts,
@@ -94,10 +97,21 @@ def regex_generate(
     input_ids: torch.Tensor = model_inputs["input_ids"]
     attention_mask: torch.Tensor = model_inputs["attention_mask"]
 
-    current_fsm_states = [fsm.initial for _ in range(batch_size)]
-    generated = ["" for _ in range(batch_size)]
+    current_fsm_states = fsm.initial * torch.ones(
+        size=(batch_size,),
+        dtype=torch.long,
+        device=model.device,
+    )
+    terminal_fsm_states = torch.tensor(
+        [state for state in fsm.finals if len(fsm.map[state]) == 0],
+        dtype=torch.long,
+        device=model.device,
+    )
 
     past_key_values = None
+    tokens_produced = torch.empty(
+        size=(batch_size, 0), dtype=torch.long, device=model.device
+    )
 
     for _ in range(max_new_tokens):
         with torch.inference_mode():
@@ -112,13 +126,8 @@ def regex_generate(
         past_key_values: torch.Tensor = outputs.past_key_values
 
         next_token_logits = logits[:, -1, :]
-        masked_logits = _mask_logits(
-            logits=next_token_logits,
-            valid_ids=[
-                state_to_valid_tokens_map[_cur_state]
-                for _cur_state in current_fsm_states
-            ],
-        )
+        mask = allowed[current_fsm_states]
+        masked_logits = next_token_logits.masked_fill(~mask, -float("inf"))
 
         next_tokens = masked_logits.argmax(dim=-1, keepdim=True)
         finished |= next_tokens.squeeze() == tokenizer.eos_token_id
@@ -126,17 +135,12 @@ def regex_generate(
         if torch.all(finished):
             break
 
-        for i in range(batch_size):
-            next_token = next_tokens[i, 0].item()
-            current_fsm_states[i] = state_to_valid_tokens_map[current_fsm_states[i]][
-                next_token
-            ]
-            if next_token != tokenizer.eos_token_id:
-                generated[i] += id_to_str[next_token]
+        tokens_produced = torch.cat((tokens_produced, next_tokens), dim=-1)
 
-        if all(
-            _cur_state in fsm.finals and len(fsm.map[_cur_state]) == 0
-            for _cur_state in current_fsm_states
+        current_fsm_states = transition[current_fsm_states, next_tokens.squeeze()]
+
+        if terminal_fsm_states.numel() > 0 and torch.all(
+            torch.isin(current_fsm_states, terminal_fsm_states)
         ):
             break
 
@@ -153,4 +157,7 @@ def regex_generate(
             dim=-1,
         )
 
-    return generated
+    return [
+        tokenizer.decode(tokens_produced[i].tolist(), skip_special_tokens=True)
+        for i in range(batch_size)
+    ]
