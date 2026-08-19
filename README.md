@@ -17,9 +17,10 @@ pip install lmdec
 
 ## Current API
 
-The initial API provides greedy generation constrained by a regular
+The initial API provides batched greedy generation constrained by a regular
 expression. At each decoding step, `regex_generate` masks tokens that would
-make the generated text violate the expression.
+make each generated text violate the expression. The same expression is
+applied to every prompt in the batch.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -30,25 +31,28 @@ model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name)
 
-result = regex_generate(
+results = regex_generate(
     model=model,
     tokenizer=tokenizer,
-    prompt="The release date is ",
+    prompts=[
+        "The first release date is ",
+        "The second release date is ",
+    ],
     regex=r"\d{4}-\d{2}-\d{2}",
     max_new_tokens=10,
 )
 
-print(result)
+print(results)
 ```
 
 ```python
 regex_generate(
     model,
     tokenizer,
-    prompt: str,
+    prompts: list[str],
     regex: str,
-    max_new_tokens: int = 64,
-) -> str
+    max_new_tokens: int,
+) -> list[str]
 ```
 
 ## Roadmap
