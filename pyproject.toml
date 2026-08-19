@@ -1,6 +1,6 @@
 [project]
 name = "lmdec"
-version = "0.1.3"
+version = "0.1.4"
 description = "Language model decoding algorithms and inference optimization experiments"
 readme = "README.md"
 authors = [
