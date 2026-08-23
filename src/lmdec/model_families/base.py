@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from transformers import PretrainedConfig
-
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -24,8 +22,12 @@ class ModelSpec:
 
 
 class ModelFamily(Protocol):
-    def build_spec(
+    spec: ModelSpec
+
+    def estimate_params(self) -> int: ...
+
+    def calculate_kv_cache_bytes(
         self,
-        model_id: str,
-        config: PretrainedConfig,
-    ) -> ModelSpec: ...
+        context_length: int,
+        bytes_per_token: int,
+    ) -> int: ...

@@ -1,10 +1,10 @@
 from math import gcd
 
-from lmdec.model_families import ModelSpec
+from lmdec.model_families import ModelFamily
 
 
 def render_analysis(
-    model_spec: ModelSpec,
+    family: ModelFamily,
     total_params: int,
     kv_bytes_per_token: int,
 ) -> str:
@@ -15,21 +15,21 @@ def render_analysis(
 
     kv_per_token_size = _format_bytes(kv_bytes_per_token, decimal_places=1)
     kv_at_8k_size = _format_bytes(kv_bytes_per_token * 8_192)
-    kv_at_context_size = _format_bytes(kv_bytes_per_token * model_spec.context_window)
+    kv_at_context_size = _format_bytes(kv_bytes_per_token * family.spec.context_window)
 
     lines = [
-        model_spec.model_id,
+        family.spec.model_id,
         "─" * 40,
         "",
         "MODEL",
-        _row("Architecture", model_spec.architecture),
+        _row("Architecture", family.spec.architecture),
         _row("Parameters", _format_params(total_params)),
-        _row("Layers", f"{model_spec.num_layers:,}"),
-        _row("Hidden size", f"{model_spec.hidden_size:,}"),
-        _row("Attention heads", f"{model_spec.num_attention_heads:,}"),
-        _row("KV heads", f"{model_spec.num_kv_heads:,}"),
-        _row("Head dimension", f"{model_spec.head_dim:,}"),
-        _row("Max context", f"{model_spec.context_window:,}"),
+        _row("Layers", f"{family.spec.num_layers:,}"),
+        _row("Hidden size", f"{family.spec.hidden_size:,}"),
+        _row("Attention heads", f"{family.spec.num_attention_heads:,}"),
+        _row("KV heads", f"{family.spec.num_kv_heads:,}"),
+        _row("Head dimension", f"{family.spec.head_dim:,}"),
+        _row("Max context", f"{family.spec.context_window:,}"),
         "",
         "MEMORY",
         _row("Weights (FP32)", f"~{fp32_size}"),
@@ -41,10 +41,10 @@ def render_analysis(
         _row("8K context", kv_at_8k_size),
     ]
 
-    if model_spec.context_window != 8_192:
+    if family.spec.context_window != 8_192:
         lines.append(
             _row(
-                _format_context_label(model_spec.context_window),
+                _format_context_label(family.spec.context_window),
                 kv_at_context_size,
             )
         )
@@ -53,10 +53,10 @@ def render_analysis(
         [
             "",
             "ATTENTION",
-            _row("Type", _attention_type(model_spec)),
-            _row("Query heads", f"{model_spec.num_attention_heads:,}"),
-            _row("KV heads", f"{model_spec.num_kv_heads:,}"),
-            _row("Q:KV ratio", _head_ratio(model_spec)),
+            _row("Type", _attention_type(family)),
+            _row("Query heads", f"{family.spec.num_attention_heads:,}"),
+            _row("KV heads", f"{family.spec.num_kv_heads:,}"),
+            _row("Q:KV ratio", _head_ratio(family)),
         ]
     )
 
@@ -126,18 +126,18 @@ def _format_context_label(context_window: int) -> str:
     return f"{context_window:,} context"
 
 
-def _attention_type(model_spec: ModelSpec) -> str:
-    if model_spec.num_kv_heads == model_spec.num_attention_heads:
+def _attention_type(family: ModelFamily) -> str:
+    if family.spec.num_kv_heads == family.spec.num_attention_heads:
         return "MHA"
 
-    if model_spec.num_kv_heads == 1:
+    if family.spec.num_kv_heads == 1:
         return "MQA"
 
     return "GQA"
 
 
-def _head_ratio(model_spec: ModelSpec) -> str:
-    divisor = gcd(model_spec.num_attention_heads, model_spec.num_kv_heads)
-    query_ratio = model_spec.num_attention_heads // divisor
-    kv_ratio = model_spec.num_kv_heads // divisor
+def _head_ratio(family: ModelFamily) -> str:
+    divisor = gcd(family.spec.num_attention_heads, family.spec.num_kv_heads)
+    query_ratio = family.spec.num_attention_heads // divisor
+    kv_ratio = family.spec.num_kv_heads // divisor
     return f"{query_ratio}:{kv_ratio}"
