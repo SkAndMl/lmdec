@@ -2,7 +2,8 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
-from .base import ModelSpec
+from lmdec.model_families.base import ModelSpec
+from lmdec.model_families.helper import attention_type
 
 
 class GenericDecoderFamily:
@@ -57,6 +58,7 @@ class GenericDecoderFamily:
             num_attention_heads=num_attention_heads,
             num_kv_heads=num_kv_heads,
             head_dim=head_dim,
+            attention_type=attention_type(num_kv_heads, num_attention_heads),
             vocab_size=_required_attr(config, "vocab_size"),
             context_window=_required_attr(
                 config,

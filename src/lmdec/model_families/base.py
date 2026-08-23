@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,7 @@ class ModelSpec:
     head_dim: int
     vocab_size: int
     context_window: int
+    attention_type: Literal["MHA", "GQA", "MQA"]
 
     tie_word_embeddings: bool
     gated_mlp: bool

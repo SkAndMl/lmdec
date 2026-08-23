@@ -16,6 +16,6 @@ def test_qwen2_family_calculates_head_dimension_when_not_explicit() -> None:
         tie_word_embeddings=True,
     )
 
-    spec = Qwen2Family().build_spec("Qwen/Qwen2.5-0.5B", config)
+    family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
 
-    assert spec.head_dim == 64
+    assert family.spec.head_dim == 64

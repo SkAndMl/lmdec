@@ -9,11 +9,11 @@ def render_analysis(
     kv_bytes_per_token: int,
 ) -> str:
 
-    fp32_size = _format_gib(total_params * 4)
-    bf16_size = _format_gib(total_params * 2)
-    fp16_size = _format_gib(total_params * 2)
+    fp32_size = _format_bytes(total_params * 4)
+    bf16_size = _format_bytes(total_params * 2)
+    fp16_size = _format_bytes(total_params * 2)
 
-    kv_per_token_size = _format_bytes(kv_bytes_per_token, decimal_places=1)
+    kv_per_token_size = _format_bytes(kv_bytes_per_token)
     kv_at_8k_size = _format_bytes(kv_bytes_per_token * 8_192)
     kv_at_context_size = _format_bytes(kv_bytes_per_token * family.spec.context_window)
 
@@ -23,7 +23,7 @@ def render_analysis(
         "",
         "MODEL",
         _row("Architecture", family.spec.architecture),
-        _row("Parameters", _format_params(total_params)),
+        _row("Parameters", f"~{_format_params(total_params)}"),
         _row("Layers", f"{family.spec.num_layers:,}"),
         _row("Hidden size", f"{family.spec.hidden_size:,}"),
         _row("Attention heads", f"{family.spec.num_attention_heads:,}"),
@@ -53,7 +53,7 @@ def render_analysis(
         [
             "",
             "ATTENTION",
-            _row("Type", _attention_type(family)),
+            _row("Type", family.spec.attention_type),
             _row("Query heads", f"{family.spec.num_attention_heads:,}"),
             _row("KV heads", f"{family.spec.num_kv_heads:,}"),
             _row("Q:KV ratio", _head_ratio(family)),
@@ -68,55 +68,39 @@ def _row(label: str, value: str) -> str:
 
 
 def _format_params(total_params: int) -> str:
-    if total_params >= 1_000_000_000:
-        return f"~{_format_number(total_params / 1_000_000_000)}B"
-
-    if total_params >= 1_000_000:
-        return f"~{total_params / 1_000_000:.0f}M"
-
-    if total_params >= 1_000:
-        return f"~{total_params / 1_000:.0f}K"
-
-    return f"~{total_params}"
+    size, unit = _scale(total_params, base=1_000, units=("", "K", "M", "B", "T"))
+    return f"{_format_number(size)}{unit}"
 
 
-def _get_resized_num_bytes_and_units(num_bytes: int) -> tuple[float, str]:
-
-    if num_bytes < 0:
-        raise ValueError(f"num_bytes ({num_bytes}) cannot be less than 0")
-
-    match num_bytes:
-        case x if x < 1024:
-            return x, "B"
-        case x if x < 1024 * 1024:
-            return round(x / 1024, 2), "KiB"
-        case x if x < 1024 * 1024 * 1024:
-            return round(x / (1024 * 1024), 2), "MiB"
-
-    return round(x / (1024 * 1024 * 1024), 2), "GiB"
+def _format_bytes(num_bytes: int) -> str:
+    size, unit = _scale(
+        num_bytes,
+        base=1_024,
+        units=("B", "KiB", "MiB", "GiB", "TiB", "PiB"),
+    )
+    return f"{_format_number(size)} {unit}"
 
 
-def _format_bytes(num_bytes: int, decimal_places: int | None = None) -> str:
-    size, unit = _get_resized_num_bytes_and_units(num_bytes)
+def _scale(value: int, base: int, units: tuple[str, ...]) -> tuple[float, str]:
+    if value < 0:
+        raise ValueError(f"value ({value}) cannot be less than 0")
 
-    if decimal_places is not None:
-        size_text = f"{size:.{decimal_places}f}"
-    else:
-        size_text = _format_number(size)
+    size = float(value)
+    unit_index = 0
 
-    return f"{size_text} {unit}"
+    while size >= base and unit_index < len(units) - 1:
+        size /= base
+        unit_index += 1
 
+    if round(size, 2) >= base and unit_index < len(units) - 1:
+        size /= base
+        unit_index += 1
 
-def _format_gib(num_bytes: int) -> str:
-    size = num_bytes / (1_024**3)
-    return f"{size:.2f} GiB"
+    return size, units[unit_index]
 
 
 def _format_number(value: float) -> str:
-    if value.is_integer():
-        return str(int(value))
-
-    return str(value)
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _format_context_label(context_window: int) -> str:
@@ -124,16 +108,6 @@ def _format_context_label(context_window: int) -> str:
         return f"{context_window // 1_024}K context"
 
     return f"{context_window:,} context"
-
-
-def _attention_type(family: ModelFamily) -> str:
-    if family.spec.num_kv_heads == family.spec.num_attention_heads:
-        return "MHA"
-
-    if family.spec.num_kv_heads == 1:
-        return "MQA"
-
-    return "GQA"
 
 
 def _head_ratio(family: ModelFamily) -> str:

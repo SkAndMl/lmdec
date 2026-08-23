@@ -1,6 +1,7 @@
 from transformers import PretrainedConfig
 
-from .base import ModelSpec
+from lmdec.model_families.base import ModelSpec
+from lmdec.model_families.helper import attention_type
 
 
 class Qwen2Family:
@@ -24,6 +25,9 @@ class Qwen2Family:
             num_attention_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
             head_dim=head_dim,
+            attention_type=attention_type(
+                config.num_key_value_heads, config.num_attention_heads
+            ),
             vocab_size=config.vocab_size,
             context_window=config.max_position_embeddings,
             tie_word_embeddings=config.tie_word_embeddings,
@@ -46,7 +50,7 @@ class Qwen2Family:
 
         embedding_params = self.spec.vocab_size * self.spec.hidden_size
         language_head_params = 0
-        if self.spec.tie_word_embeddings:
+        if not self.spec.tie_word_embeddings:
             language_head_params = self.spec.vocab_size * self.spec.hidden_size
 
         total_params = (

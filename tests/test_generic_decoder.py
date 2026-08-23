@@ -20,7 +20,8 @@ def test_generic_decoder_builds_spec_from_common_aliases() -> None:
         tie_word_embeddings=False,
     )
 
-    spec = GenericDecoderFamily().build_spec("org/model", config)
+    family = GenericDecoderFamily("org/model", config)
+    spec = family.spec
 
     assert spec.model_id == "org/model"
     assert spec.architecture == "GenericForCausalLM"
@@ -38,6 +39,15 @@ def test_generic_decoder_builds_spec_from_common_aliases() -> None:
 
 
 def test_registry_uses_generic_decoder_for_unknown_model_type() -> None:
-    family = resolve_family(GenericConfig())
+    config = GenericConfig(
+        architectures=["GenericForCausalLM"],
+        vocab_size=32_000,
+        n_embd=768,
+        n_layer=12,
+        n_head=12,
+        n_positions=2_048,
+    )
+
+    family = resolve_family("org/model", config)
 
     assert isinstance(family, GenericDecoderFamily)
