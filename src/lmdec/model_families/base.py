@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+DType = Literal["bf16", "fp16", "fp32"]
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -27,6 +29,9 @@ class ModelAnalysis:
     spec: ModelSpec
     total_params: int
     kv_bytes_per_token: int
+    context: int
+    batch_size: int
+    dtype: DType
 
 
 class ModelFamily(Protocol):
@@ -36,8 +41,12 @@ class ModelFamily(Protocol):
 
     def calculate_kv_cache_bytes(
         self,
-        context_length: int,
         bytes_per_value: int,
     ) -> int: ...
 
-    def analyze(self) -> ModelAnalysis: ...
+    def analyze(
+        self,
+        context: int,
+        batch_size: int,
+        dtype: DType,
+    ) -> ModelAnalysis: ...

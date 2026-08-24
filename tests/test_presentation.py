@@ -17,7 +17,11 @@ def test_render_analysis_matches_expected_qwen_report() -> None:
         tie_word_embeddings=True,
     )
     family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
-    analysis = family.analyze()
+    analysis = family.analyze(
+        context=4_096,
+        batch_size=3,
+        dtype="fp32",
+    )
 
     report = render_analysis(analysis)
 
@@ -36,13 +40,14 @@ Max context         32,768
 
 MEMORY
 Weights (FP32)      ~1.84 GiB
-Weights (BF16)      ~942.16 MiB
-Weights (FP16)      ~942.16 MiB
+KV cache            288 MiB
+Total               ~2.12 GiB
 
-KV CACHE
-Per token           12 KiB
-8K context          96 MiB
-32K context         384 MiB
+KV CACHE (FP32)
+Per token           24 KiB
+Context             4,096 tokens
+Batch size          3
+Total               288 MiB
 
 ATTENTION
 Type                GQA

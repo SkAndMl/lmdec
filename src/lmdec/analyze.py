@@ -1,11 +1,48 @@
+from argparse import ArgumentParser
+from dataclasses import dataclass
+
 from transformers import AutoConfig
 
-from lmdec.model_families import resolve_family
+from lmdec.model_families.base import DType
+from lmdec.model_families.registry import resolve_family
 from lmdec.presentation import render_analysis
 
 
-def analyze(model_id: str) -> None:
-    config = AutoConfig.from_pretrained(model_id)
-    family = resolve_family(model_id, config)
-    analysis = family.analyze()
+@dataclass(frozen=True)
+class AnalyseArgs:
+    model_id: str
+    context: int
+    batch_size: int
+    dtype: DType
+
+    def __post_init__(self):
+        if self.context <= 0:
+            raise ValueError("context cannot be negative")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size cannot be negative")
+
+
+def get_analyze_parser() -> ArgumentParser:
+    parser = ArgumentParser(add_help=False)
+    parser.add_argument("model_id", type=str)
+    parser.add_argument("--context", type=int, required=False, default=1)
+    parser.add_argument("--batch_size", type=int, required=False, default=1)
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["fp16", "bf16", "fp32"],
+        required=False,
+        default="bf16",
+    )
+    return parser
+
+
+def run(args: AnalyseArgs) -> None:
+    config = AutoConfig.from_pretrained(args.model_id)
+    family = resolve_family(args.model_id, config)
+    analysis = family.analyze(
+        context=args.context,
+        batch_size=args.batch_size,
+        dtype=args.dtype,
+    )
     print(render_analysis(analysis))

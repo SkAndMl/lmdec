@@ -1,7 +1,7 @@
 from transformers import PretrainedConfig
 
-from lmdec.model_families.base import ModelAnalysis, ModelSpec
-from lmdec.model_families.helper import attention_type
+from lmdec.model_families.base import DType, ModelAnalysis, ModelSpec
+from lmdec.model_families.helper import attention_type, dtype_to_byte_count
 
 
 class Qwen2Family:
@@ -63,21 +63,27 @@ class Qwen2Family:
 
     def calculate_kv_cache_bytes(
         self,
-        context_length: int,
         bytes_per_value: int,
     ) -> int:
 
         total_value_per_token = (
             2 * self.spec.num_layers * self.spec.head_dim * self.spec.num_kv_heads
         )
-        return bytes_per_value * context_length * total_value_per_token
+        return bytes_per_value * total_value_per_token
 
-    def analyze(self) -> ModelAnalysis:
+    def analyze(
+        self,
+        context: int,
+        batch_size: int,
+        dtype: DType,
+    ) -> ModelAnalysis:
         return ModelAnalysis(
             spec=self.spec,
             total_params=self.estimate_params(),
             kv_bytes_per_token=self.calculate_kv_cache_bytes(
-                context_length=1,
-                bytes_per_value=2,
+                bytes_per_value=dtype_to_byte_count(dtype),
             ),
+            context=context,
+            batch_size=batch_size,
+            dtype=dtype,
         )
