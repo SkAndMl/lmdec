@@ -17,13 +17,9 @@ def test_render_analysis_matches_expected_qwen_report() -> None:
         tie_word_embeddings=True,
     )
     family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
-    total_params = family.estimate_params()
-    kv_bytes_per_token = family.calculate_kv_cache_bytes(
-        context_length=1,
-        bytes_per_token=2,
-    )
+    analysis = family.analyze()
 
-    report = render_analysis(family, total_params, kv_bytes_per_token)
+    report = render_analysis(analysis)
 
     assert report == """Qwen/Qwen2.5-0.5B
 ────────────────────────────────────────

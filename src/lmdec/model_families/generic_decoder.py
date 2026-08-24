@@ -2,7 +2,7 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
-from lmdec.model_families.base import ModelSpec
+from lmdec.model_families.base import ModelAnalysis, ModelSpec
 from lmdec.model_families.helper import attention_type
 
 
@@ -67,18 +67,18 @@ class GenericDecoderFamily:
                 "seq_length",
             ),
             tie_word_embeddings=getattr(config, "tie_word_embeddings", True),
-            gated_mlp=True,
+            gated_mlp=getattr(config, "gated_mlp", False),
         )
 
     def calculate_kv_cache_bytes(
         self,
         context_length: int,
-        bytes_per_token: int,
+        bytes_per_value: int,
     ) -> int:
         total_value_per_token = (
             2 * self.spec.num_layers * self.spec.num_kv_heads * self.spec.head_dim
         )
-        return context_length * bytes_per_token * total_value_per_token
+        return context_length * bytes_per_value * total_value_per_token
 
     def estimate_params(self) -> int:
 
@@ -107,6 +107,16 @@ class GenericDecoderFamily:
         )
 
         return total_params
+
+    def analyze(self) -> ModelAnalysis:
+        return ModelAnalysis(
+            spec=self.spec,
+            total_params=self.estimate_params(),
+            kv_bytes_per_token=self.calculate_kv_cache_bytes(
+                context_length=1,
+                bytes_per_value=2,
+            ),
+        )
 
 
 def _required_attr(config: PretrainedConfig, *names: str) -> Any:

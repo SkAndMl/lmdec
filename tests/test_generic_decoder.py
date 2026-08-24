@@ -35,7 +35,24 @@ def test_generic_decoder_builds_spec_from_common_aliases() -> None:
     assert spec.vocab_size == 32_000
     assert spec.context_window == 2_048
     assert spec.tie_word_embeddings is False
-    assert spec.gated_mlp is True
+    assert spec.gated_mlp is False
+
+
+def test_generic_decoder_respects_explicit_gated_mlp_config() -> None:
+    config = GenericConfig(
+        architectures=["GenericForCausalLM"],
+        vocab_size=32_000,
+        hidden_size=768,
+        intermediate_size=3_072,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        max_position_embeddings=2_048,
+        gated_mlp=True,
+    )
+
+    family = GenericDecoderFamily("org/model", config)
+
+    assert family.spec.gated_mlp is True
 
 
 def test_registry_uses_generic_decoder_for_unknown_model_type() -> None:

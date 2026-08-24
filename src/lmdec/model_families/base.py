@@ -22,6 +22,13 @@ class ModelSpec:
     gated_mlp: bool
 
 
+@dataclass(frozen=True)
+class ModelAnalysis:
+    spec: ModelSpec
+    total_params: int
+    kv_bytes_per_token: int
+
+
 class ModelFamily(Protocol):
     spec: ModelSpec
 
@@ -30,5 +37,7 @@ class ModelFamily(Protocol):
     def calculate_kv_cache_bytes(
         self,
         context_length: int,
-        bytes_per_token: int,
+        bytes_per_value: int,
     ) -> int: ...
+
+    def analyze(self) -> ModelAnalysis: ...
