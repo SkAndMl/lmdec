@@ -32,6 +32,7 @@ class ModelAnalysis:
     context: int
     batch_size: int
     dtype: DType
+    kv_dtype: DType
 
 
 class ModelFamily(Protocol):
@@ -49,4 +50,5 @@ class ModelFamily(Protocol):
         context: int,
         batch_size: int,
         dtype: DType,
+        kv_dtype: DType,
     ) -> ModelAnalysis: ...

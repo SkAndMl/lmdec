@@ -55,6 +55,34 @@ def test_generic_decoder_respects_explicit_gated_mlp_config() -> None:
     assert family.spec.gated_mlp is True
 
 
+def test_generic_decoder_analysis_uses_requested_dtype_and_configuration() -> None:
+    config = GenericConfig(
+        architectures=["GenericForCausalLM"],
+        vocab_size=32_000,
+        hidden_size=768,
+        intermediate_size=3_072,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        max_position_embeddings=2_048,
+    )
+    family = GenericDecoderFamily("org/model", config)
+
+    analysis = family.analyze(
+        context=1_024,
+        batch_size=4,
+        dtype="fp32",
+        kv_dtype="bf16",
+    )
+
+    assert analysis.spec is family.spec
+    assert analysis.total_params == family.estimate_params()
+    assert analysis.kv_bytes_per_token == 36 * 1_024
+    assert analysis.context == 1_024
+    assert analysis.batch_size == 4
+    assert analysis.dtype == "fp32"
+    assert analysis.kv_dtype == "bf16"
+
+
 def test_registry_uses_generic_decoder_for_unknown_model_type() -> None:
     config = GenericConfig(
         architectures=["GenericForCausalLM"],

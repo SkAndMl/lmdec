@@ -21,6 +21,7 @@ def test_render_analysis_matches_expected_qwen_report() -> None:
         context=4_096,
         batch_size=3,
         dtype="fp32",
+        kv_dtype="bf16",
     )
 
     report = render_analysis(analysis)
@@ -40,14 +41,14 @@ Max context         32,768
 
 MEMORY
 Weights (FP32)      ~1.84 GiB
-KV cache            288 MiB
-Total               ~2.12 GiB
+KV cache (BF16)     144 MiB
+Total               ~1.98 GiB
 
-KV CACHE (FP32)
-Per token           24 KiB
+KV CACHE (BF16)
+Per token           12 KiB
 Context             4,096 tokens
 Batch size          3
-Total               288 MiB
+Total               144 MiB
 
 ATTENTION
 Type                GQA

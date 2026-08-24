@@ -22,6 +22,7 @@ def main():
                     context=args.context,
                     batch_size=args.batch_size,
                     dtype=args.dtype,
+                    kv_dtype=args.kv_dtype,
                 )
             )
 

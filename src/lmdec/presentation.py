@@ -18,7 +18,8 @@ def render_analysis(analysis: ModelAnalysis) -> str:
     weight_size = _format_bytes(weight_bytes)
     kv_cache_size = _format_bytes(kv_cache_bytes)
     total_size = _format_bytes(weight_bytes + kv_cache_bytes)
-    dtype_label = analysis.dtype.upper()
+    weight_dtype_label = analysis.dtype.upper()
+    kv_dtype_label = analysis.kv_dtype.upper()
 
     lines = [
         spec.model_id,
@@ -35,11 +36,11 @@ def render_analysis(analysis: ModelAnalysis) -> str:
         _row("Max context", f"{spec.context_window:,}"),
         "",
         "MEMORY",
-        _row(f"Weights ({dtype_label})", f"~{weight_size}"),
-        _row("KV cache", kv_cache_size),
+        _row(f"Weights ({weight_dtype_label})", f"~{weight_size}"),
+        _row(f"KV cache ({kv_dtype_label})", kv_cache_size),
         _row("Total", f"~{total_size}"),
         "",
-        f"KV CACHE ({dtype_label})",
+        f"KV CACHE ({kv_dtype_label})",
         _row("Per token", kv_per_token_size),
         _row("Context", f"{analysis.context:,} tokens"),
         _row("Batch size", f"{analysis.batch_size:,}"),

@@ -112,16 +112,18 @@ class GenericDecoderFamily:
         context: int,
         batch_size: int,
         dtype: DType,
+        kv_dtype: DType,
     ) -> ModelAnalysis:
         return ModelAnalysis(
             spec=self.spec,
             total_params=self.estimate_params(),
             kv_bytes_per_token=self.calculate_kv_cache_bytes(
-                bytes_per_value=dtype_to_byte_count(dtype),
+                bytes_per_value=dtype_to_byte_count(kv_dtype),
             ),
             context=context,
             batch_size=batch_size,
             dtype=dtype,
+            kv_dtype=kv_dtype,
         )
 
 
