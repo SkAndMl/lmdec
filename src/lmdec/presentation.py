@@ -58,7 +58,141 @@ def render_analysis(analysis: ModelAnalysis) -> str:
         ]
     )
 
+    if analysis.explain:
+        lines.extend(["", *_render_derivation(analysis)])
+
     return "\n".join(lines)
+
+
+def _render_derivation(analysis: ModelAnalysis) -> list[str]:
+    spec = analysis.spec
+    weight_bytes_per_parameter = dtype_to_byte_count(analysis.dtype)
+    kv_bytes_per_element = dtype_to_byte_count(analysis.kv_dtype)
+    kv_bytes_per_sequence = analysis.kv_bytes_per_token * analysis.context
+    kv_cache_bytes = kv_bytes_per_sequence * analysis.batch_size
+
+    lines = [
+        "DERIVATION",
+        "─" * 40,
+        "",
+        "PARAMETERS",
+        f"{spec.architecture} architecture estimate",
+        f"→ {analysis.total_params:,} parameters",
+        *_embedding_assumption(spec),
+        "",
+        "HEAD DIMENSION",
+        f"{spec.hidden_size:,} / {spec.num_attention_heads:,} query heads",
+        f"→ {spec.head_dim:,}",
+        "",
+        "ATTENTION",
+        (
+            f"{spec.num_attention_heads:,} query heads / "
+            f"{spec.num_kv_heads:,} KV heads"
+        ),
+        f"→ {spec.attention_type}, Q:KV ratio {_head_ratio(spec)}",
+        *_attention_implication(spec),
+        "",
+        "WEIGHT MEMORY",
+        (
+            f"{analysis.total_params:,} parameters × "
+            f"{weight_bytes_per_parameter} bytes ({analysis.dtype.upper()})"
+        ),
+        f"→ {_format_bytes(analysis.total_params * weight_bytes_per_parameter)}",
+        "",
+        "KV CACHE",
+        (
+            f"2 (K + V) × {spec.num_layers:,} layers × "
+            f"{spec.num_kv_heads:,} KV heads × {spec.head_dim:,} × "
+            f"{kv_bytes_per_element} bytes ({analysis.kv_dtype.upper()})"
+        ),
+        f"→ {_format_bytes(analysis.kv_bytes_per_token)}/token",
+        "",
+        (
+            f"{_format_bytes(analysis.kv_bytes_per_token)}/token × "
+            f"{analysis.context:,} tokens"
+        ),
+        f"→ {_format_bytes(kv_bytes_per_sequence)}/sequence",
+    ]
+
+    if analysis.batch_size > 1:
+        lines.extend(
+            [
+                "",
+                (
+                    f"{_format_bytes(analysis.kv_bytes_per_token)}/token × "
+                    f"{analysis.context:,} tokens × "
+                    f"{analysis.batch_size:,} sequences"
+                ),
+                f"→ {_format_bytes(kv_cache_bytes)} total KV cache",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "ASSUMPTIONS",
+            "─" * 40,
+            "Weight memory is raw parameter storage only.",
+            "KV memory is theoretical tensor payload.",
+            *_batch_assumption(analysis),
+            "Activations, temporary workspaces, allocator/runtime overhead,",
+            "cache block rounding, and runtime-specific layouts are excluded.",
+        ]
+    )
+
+    return lines
+
+
+def _embedding_assumption(spec: ModelSpec) -> list[str]:
+    matrix_size = f"{spec.vocab_size:,} × {spec.hidden_size:,}"
+    if spec.tie_word_embeddings:
+        return [
+            "Input and output embeddings are tied; the LM head adds no",
+            f"separate {matrix_size} parameter matrix.",
+        ]
+
+    return [
+        "Input and output embeddings are untied; the estimate includes a",
+        f"separate {matrix_size} parameter matrix for the LM head.",
+    ]
+
+
+def _attention_implication(spec: ModelSpec) -> list[str]:
+    query_heads = spec.num_attention_heads
+    kv_heads = spec.num_kv_heads
+
+    if query_heads == kv_heads:
+        return ["→ Each query head has its own KV head; no KV-head sharing."]
+
+    if query_heads % kv_heads == 0:
+        sharing_factor = query_heads // kv_heads
+        return [
+            (
+                f"→ Each KV head is shared by {sharing_factor:,} query heads, "
+                "reducing KV-cache"
+            ),
+            f"  payload by {sharing_factor:,}× versus equivalent MHA.",
+        ]
+
+    return [
+        "→ Fewer KV heads than query heads reduce KV-cache payload versus MHA."
+    ]
+
+
+def _batch_assumption(analysis: ModelAnalysis) -> list[str]:
+    if analysis.batch_size == 1:
+        return [
+            "Batch size 1 means one sequence occupying the full",
+            f"{analysis.context:,}-token context.",
+        ]
+
+    return [
+        (
+            f"Batch size {analysis.batch_size:,} means "
+            f"{analysis.batch_size:,} sequences, each occupying the full"
+        ),
+        f"{analysis.context:,}-token context.",
+    ]
 
 
 def _row(label: str, value: str) -> str:

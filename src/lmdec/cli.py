@@ -23,6 +23,7 @@ def main():
                     batch_size=args.batch_size,
                     dtype=args.dtype,
                     kv_dtype=args.kv_dtype,
+                    explain=args.explain,
                 )
             )
 

@@ -33,6 +33,7 @@ class ModelAnalysis:
     batch_size: int
     dtype: DType
     kv_dtype: DType
+    explain: bool
 
 
 class ModelFamily(Protocol):
@@ -51,4 +52,5 @@ class ModelFamily(Protocol):
         batch_size: int,
         dtype: DType,
         kv_dtype: DType,
+        explain: bool,
     ) -> ModelAnalysis: ...

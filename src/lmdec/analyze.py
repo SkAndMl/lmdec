@@ -15,6 +15,7 @@ class AnalyseArgs:
     batch_size: int
     dtype: DType
     kv_dtype: DType
+    explain: bool
 
     def __post_init__(self):
         if self.context <= 0:
@@ -42,6 +43,13 @@ def get_analyze_parser() -> ArgumentParser:
         required=False,
         default="bf16",
     )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        required=False,
+        default=False,
+    )
+
     return parser
 
 
@@ -53,5 +61,6 @@ def run(args: AnalyseArgs) -> None:
         batch_size=args.batch_size,
         dtype=args.dtype,
         kv_dtype=args.kv_dtype,
+        explain=args.explain,
     )
     print(render_analysis(analysis))

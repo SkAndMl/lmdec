@@ -77,6 +77,7 @@ class Qwen2Family:
         batch_size: int,
         dtype: DType,
         kv_dtype: DType,
+        explain: bool,
     ) -> ModelAnalysis:
         return ModelAnalysis(
             spec=self.spec,
@@ -88,4 +89,5 @@ class Qwen2Family:
             batch_size=batch_size,
             dtype=dtype,
             kv_dtype=kv_dtype,
+            explain=explain,
         )

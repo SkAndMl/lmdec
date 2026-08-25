@@ -72,6 +72,7 @@ def test_generic_decoder_analysis_uses_requested_dtype_and_configuration() -> No
         batch_size=4,
         dtype="fp32",
         kv_dtype="bf16",
+        explain=True,
     )
 
     assert analysis.spec is family.spec
@@ -81,6 +82,7 @@ def test_generic_decoder_analysis_uses_requested_dtype_and_configuration() -> No
     assert analysis.batch_size == 4
     assert analysis.dtype == "fp32"
     assert analysis.kv_dtype == "bf16"
+    assert analysis.explain is True
 
 
 def test_registry_uses_generic_decoder_for_unknown_model_type() -> None:
