@@ -1,17 +1,8 @@
----
-title: "Building Regex-Constrained Decoding from Scratch"
-subtitle: "Finite-state machines, token masks, KV caching, batching, and the tokenizer edge cases that remain"
-author: "Sathya Krishnan"
-date: "2026-08-24"
-description: "A build narrative of regex_generate in lmdec: from partial regex matching to a batched finite-state decoder."
-cover_image: "assets/regex-constrained-decoding/00_cover.png"
----
-
 # Building Regex-Constrained Decoding from Scratch
 
 *Finite-state machines, token masks, KV caching, batching, and the tokenizer edge cases that remain*
 
-![Abstract token tiles pass through a finite-state gate and emerge in a fixed pattern.](assets/regex-constrained-decoding/00_cover.png)
+![Model logits pass through a regex state machine and become a valid fixed-format output.](assets/regex-constrained-decoding/00_cover.png)
 
 You ask a language model to return a date in `YYYY-MM-DD` format. The date is buried inside a larger response:
 
@@ -35,23 +26,16 @@ Both strings match the regex. That is the exact guarantee—not that the model k
 
 #### A prompt changes probabilities; a constraint changes the support
 
-At decoding step $t$, a causal language model assigns a logit $z_v$ to every token $v$ in its vocabulary. Greedy decoding chooses the token with the largest logit; sampling draws from their softmax probabilities.
+At decoding step `t`, a causal language model assigns a logit `z_v` to every token `v` in its vocabulary. Greedy decoding chooses the token with the largest logit; sampling draws from their softmax probabilities.
 
-A good prompt can push the probability mass toward date-shaped tokens. But tokens such as `"The"`, `"January"`, or a newline still have nonzero probability. Regex-constrained decoding constructs an allowed set $A(s_t)$ from the current constraint state $s_t$ and changes the logits before selection:
+A good prompt can push the probability mass toward date-shaped tokens. But tokens such as `"The"`, `"January"`, or a newline still have nonzero probability. Regex-constrained decoding constructs an allowed set `A(s_t)` from the current constraint state `s_t` and changes the logits before selection:
 
-$$
-\tilde{z}_v =
-\begin{cases}
-z_v & v \in A(s_t) \\
--\infty & v \notin A(s_t).
-\end{cases}
-\tag{1}
-$$
+![Equation 1: invalid token logits are replaced by negative infinity.](assets/regex-constrained-decoding/equation_01.png)
 
 After softmax, every invalid token has probability zero. The model still decides *which valid continuation it prefers*. The decoder decides which continuations exist.
 
 ![Illustrative model scores before and after invalid tokens are masked.](assets/regex-constrained-decoding/01_prompting_vs_constraints.png)
-*Figure 1: Prompting can make a format likely; setting invalid logits to $-\infty$ makes violations impossible under the decoder. Scores are illustrative. (Image by author)*
+*Figure 1: Prompting can make a format likely; setting invalid logits to −∞ makes violations impossible under the decoder. Scores are illustrative. (Diagram by author)*
 
 This distinction is my first rule for structured generation: **use prompts for meaning and decoding constraints for syntax**. Confusing the two produces systems that work in a demo and fail when their output becomes somebody else's input.
 
@@ -93,12 +77,9 @@ masked_logits = next_token_logits.masked_fill(~mask, -float("inf"))
 
 This is a good first version. It mirrors the definition of the problem, leaves little room for clever bugs, and produces a list of allowed token IDs that can be inspected directly. I would build it this way again.
 
-It also repeats nearly all of its work. If the generated prefix has length $L$, the vocabulary contains $V$ tokens, and the average candidate token contains $K$ characters, then one decoding step repeatedly examines strings of roughly $L + K$ characters. Over $T$ generated tokens, the rough Python-side work grows like
+It also repeats nearly all of its work. If the generated prefix has length `L`, the vocabulary contains `V` tokens, and the average candidate token contains `K` characters, then one decoding step repeatedly examines strings of roughly `L + K` characters. Over `T` generated tokens, the rough Python-side work grows like
 
-$$
-O\left(\sum_{t=1}^{T} V(L_t + K)\right).
-\tag{2}
-$$
+![Equation 2: approximate Python-side work of the naïve matcher.](assets/regex-constrained-decoding/equation_02.png)
 
 The prefix has already been validated at the previous step, yet it gets reparsed once for every candidate token.
 
@@ -118,15 +99,11 @@ current_state = fsm.initial
 For a fixed-width date, the useful intuition is a chain. Four digit transitions consume the year, a hyphen transition consumes the separator, and the same process repeats for month and day.
 
 ![An eleven-state finite-state machine for a fixed-width date, including a token that traverses two character edges.](assets/regex-constrained-decoding/02_regex_to_fsm.png)
-*Figure 2: The current state summarizes the entire valid prefix, while a single tokenizer token such as `"20"` may traverse multiple character transitions. (Image by author)*
+*Figure 2: The current state summarizes the entire valid prefix, while a single tokenizer token such as `"20"` may traverse multiple character transitions. (Diagram by author)*
 
-The machine's transition function $\delta(s, c)$ consumes one character $c$. Tokens are strings, so I extend it by folding over all characters in a token:
+The machine's transition function `δ(s, c)` consumes one character `c`. Tokens are strings, so I extend it by folding over all characters in a token:
 
-$$
-\delta^*(s, c_1 c_2 \ldots c_k)
-= \delta(\ldots\delta(\delta(s,c_1),c_2)\ldots,c_k).
-\tag{3}
-$$
+![Equation 3: extending the state transition over every character in a token string.](assets/regex-constrained-decoding/equation_03.png)
 
 In code, a failed transition returns `None`:
 
@@ -140,14 +117,11 @@ def walk_fsm(state: int, fsm, text: str) -> int | None:
     return state
 ```
 
-After token $v_t$ is selected, the only constraint history I need to retain is
+After token `v_t` is selected, the only constraint history I need to retain is
 
-$$
-s_{t+1} = \delta^*(s_t, \operatorname{str}(v_t)).
-\tag{4}
-$$
+![Equation 4: update the FSM state using the selected token string.](assets/regex-constrained-decoding/equation_04.png)
 
-This removes the generated prefix from the inner validation loop. Each candidate walk starts at $s_t$ and examines only the candidate token string.
+This removes the generated prefix from the inner validation loop. Each candidate walk starts at `s_t` and examines only the candidate token string.
 
 I expected this change alone to make masking obviously faster. It did not. On the SmolLM2 tokenizer's 49,152-token vocabulary, at the prefix `2023-`, the original partial-regex check took a median **24.9 ms**. Rescanning the full prefix through the FSM took **50.1 ms**, and tracking the current state reduced it to **23.7 ms**. The state-machine version improved the asymptotic story but barely changed this small case in Python.
 
@@ -155,26 +129,18 @@ This is worth dwelling on: **a better representation is not automatically a fast
 
 ## Precompute the constraint
 
-For a fixed regex and tokenizer vocabulary, the answer to “Can token $v$ be consumed from state $s$?” never changes during generation. So I compute it once for every `(state, token)` pair.
+For a fixed regex and tokenizer vocabulary, the answer to “Can token `v` be consumed from state `s`?” never changes during generation. So I compute it once for every `(state, token)` pair.
 
 The implementation creates two dense tensors:
 
-$$
-\operatorname{allowed}[s,v]
-= \mathbb{1}\left[\delta^*(s,\operatorname{str}(v))\neq\varnothing\right],
-\tag{5}
-$$
+![Equation 5: a state-token pair is allowed when consuming the token reaches another FSM state.](assets/regex-constrained-decoding/equation_05.png)
 
-$$
-\operatorname{transition}[s,v]
-= \delta^*(s,\operatorname{str}(v)).
-\tag{6}
-$$
+![Equation 6: the transition table stores the next FSM state for a state-token pair.](assets/regex-constrained-decoding/equation_06.png)
 
 For invalid pairs, `transition` stores `-1`. For accepting states, EOS is marked as allowed and transitions back to the same state. That self-transition matters in a batch: a completed row can keep emitting EOS while other rows continue.
 
 ![A conceptual allowed-token matrix beside its matching next-state transition matrix.](assets/regex-constrained-decoding/03_precomputed_tables.png)
-*Figure 3: Precomputation separates the two questions needed at every decoding step: which tokens are selectable, and where each selected token moves the FSM. (Image by author)*
+*Figure 3: Precomputation separates the two questions needed at every decoding step: which tokens are selectable, and where each selected token moves the FSM. (Diagram by author)*
 
 The generation-time lookup becomes tensor indexing:
 
@@ -193,11 +159,7 @@ For the date regex, selecting the precomputed row took a median **0.000542 ms** 
 
 The work has also moved to initialization. Building the token-string map took **52.0 ms** and constructing the tables took another **276.9 ms**. The date FSM had 11 states, and the Boolean `allowed` tensor plus the `int64` `transition` tensor occupied **4.64 MiB**:
 
-$$
-11 \times 49{,}152 \times (1 + 8)\ \text{bytes}
-\approx 4.64\ \text{MiB}.
-\tag{7}
-$$
+![Equation 7: memory occupied by the date regex's dense mask and transition tensors.](assets/regex-constrained-decoding/equation_07.png)
 
 This trade-off is favorable when a pattern is reused across many tokens or requests. It is less attractive for a one-token completion or a regex that produces many states. The current function rebuilds these tables on every call, so caching them by `(regex, tokenizer, vocabulary)` is an obvious next improvement.
 
@@ -245,7 +207,7 @@ Three details carry more weight than their line count suggests.
 
 **EOS is part of the constraint.** It is valid only from an accepting FSM state. Otherwise a high EOS logit could terminate an incomplete string. An accepting state with outgoing edges may choose either EOS or another valid token; a terminal accepting state has only EOS available.
 
-**A missing continuation is an error, not a sampling opportunity.** If a row has no allowed token, taking `argmax` over all $-\infty$ values hides the real problem. The function raises immediately.
+**A missing continuation is an error, not a sampling opportunity.** If a row has no allowed token, taking `argmax` over all −∞ values hides the real problem. The function raises immediately.
 
 **Validate the final artifact.** After decoding token IDs back into text, the implementation applies a Python `re.fullmatch`. This catches token-string reconstruction mistakes and too-small `max_new_tokens` values at the API boundary. It does not prove that the FSM compiler and Python's regex engine agree on every supported pattern; that mismatch is itself a limitation discussed below.
 
@@ -272,7 +234,7 @@ mask = allowed[current_fsm_states]  # one vocabulary mask per row
 ```
 
 ![Three batch rows use one shared constraint table while retaining different current states.](assets/regex-constrained-decoding/05_batched_state_tracking.png)
-*Figure 4: Batching shares the compiled regex but not decoding progress; each row requires its own FSM state, completion flag, and generated length. (Image by author)*
+*Figure 4: Batching shares the compiled regex but not decoding progress; each row requires its own FSM state, completion flag, and generated length. (Diagram by author)*
 
 Completion bookkeeping caused the more interesting bug. Suppose row 0 selects EOS while row 1 needs three more tokens. The model still expects a rectangular batch on the next step. I keep row 0 alive syntactically by forcing it to select EOS forever:
 
@@ -289,15 +251,15 @@ At the public API boundary, four repeated ~128-token prompts took a median **2.9
 
 All measurements below were collected on an Apple Silicon MacBook Pro using CPU execution, four PyTorch threads, SmolLM2-135M-Instruct, and its 49,152-token vocabulary. They are small local experiments, not a general benchmark suite.
 
-| Change | Before | After | What the number includes |
-|---|---:|---:|---|
-| Track FSM state | 24.9 ms partial regex | 23.7 ms FSM walk | One full-vocabulary validity pass at prefix `2023-` |
-| Precompute state/token table | 23.7 ms FSM walk | 0.000542 ms row lookup | Constraint lookup only; excludes dense masking and model work |
-| Reuse KV cache | 3.59 s | 456 ms | Ten generated tokens after a 128-token prompt; model loading and constraint setup excluded |
-| Batch four prompts | 2.95 s sequential | 1.68 s batched | End-to-end `regex_generate` calls with model already loaded |
+- **Track FSM state:** 24.9 ms partial regex → 23.7 ms FSM walk.
+- **Precompute the state/token table:** 23.7 ms FSM walk → 0.000542 ms row lookup.
+- **Reuse the KV cache:** 3.59 s → 456 ms.
+- **Batch four prompts:** 2.95 s sequential → 1.68 s batched.
+
+The first row is one full-vocabulary validity pass at prefix `2023-`. The table-lookup row measures constraint lookup only, excluding dense masking and model work. The cache row covers ten generated tokens after a 128-token prompt, excluding model loading and constraint setup. The batch row measures end-to-end `regex_generate` calls with the model already loaded.
 
 ![Log-scale constraint lookup times beside cached-generation and batching latency comparisons.](assets/regex-constrained-decoding/04_benchmark_results.png)
-*Figure 5: Precomputation, KV caching, and batching reduce different costs; only the last two numbers measure model execution. (Image by author)*
+*Figure 5: Precomputation, KV caching, and batching reduce different costs; only the last two numbers measure model execution. (Diagram by author)*
 
 The failed expectation is as useful as the speedups: merely replacing a partial regex with an FSM did not improve latency. It first made the rescan version about 2× slower. The benefit appeared only after the state became persistent and the `(state, token)` work became reusable.
 
@@ -342,19 +304,15 @@ I would describe `lmdec` as an educational implementation, not a production stru
 
 **Per-token decoding is not always compositional.** The code converts each token to a string independently and assumes
 
-$$
-\operatorname{decode}([v_1, v_2])
-= \operatorname{decode}([v_1]) + \operatorname{decode}([v_2]).
-\tag{8}
-$$
+![Equation 8: the compositional decoding identity assumed by the current implementation.](assets/regex-constrained-decoding/equation_08.png)
 
-That identity is false for some byte-level fallback tokens. With the SmolLM2 tokenizer, `🙂` becomes token IDs `[10813, 38887]`. Decoding the pair produces `🙂`; converting the two tokens independently produced `"�"` and `"��"`, or `"���"` when concatenated. The current FSM therefore cannot correctly constrain that emoji even though the tokenizer can generate it. Fixing this likely requires composing the constraint with the tokenizer's byte-level representation rather than treating isolated decoded strings as ground truth.
+That identity is false for some byte-level fallback tokens. With the SmolLM2 tokenizer, the Unicode character `U+1F642` (slightly smiling face) becomes token IDs `[10813, 38887]`. Decoding the pair reconstructs the character. Decoding the tokens independently produces one Unicode replacement character (`U+FFFD`) from the first token and two from the second, so concatenating the pieces produces three replacement characters instead. The current FSM therefore cannot correctly constrain that character even though the tokenizer can generate it. Fixing this likely requires composing the constraint with the tokenizer's byte-level representation rather than treating isolated decoded strings as ground truth.
 
 **Regex support is a subset.** `interegular` documents unsupported backreferences, conditional matching, and incomplete handling of some lookarounds. Patterns accepted by Python's `re` module are not automatically safe here.
 
 **Two regex engines define correctness.** The FSM comes from `interegular`, while the final check uses Python `re.fullmatch`. For ordinary patterns this is useful defense in depth. For dialect differences it can produce surprising disagreements. A mature API should define one supported syntax explicitly and reject everything outside it early.
 
-**Dense tables scale with states times vocabulary.** The current `bool` mask and `int64` transition tensor use about $9SV$ bytes before device-specific overhead. Eleven states are harmless. A large compiled grammar and a 100k-token vocabulary are a different problem. Sparse or compressed token tries would trade simpler indexing for lower memory.
+**Dense tables scale with states times vocabulary.** The current `bool` mask and `int64` transition tensor use about `9SV` bytes before device-specific overhead. Eleven states are harmless. A large compiled grammar and a 100k-token vocabulary are a different problem. Sparse or compressed token tries would trade simpler indexing for lower memory.
 
 **The decoder is greedy and standalone.** There is no sampling, beam search, per-row regex, streaming, or integration with Hugging Face's logits-processor interface. The implementation also rebuilds token and FSM tables for each call.
 

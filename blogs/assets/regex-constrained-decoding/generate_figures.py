@@ -1,343 +1,620 @@
-"""Generate the technical figures for the regex-constrained decoding post."""
+"""Generate every visual used by the regex-constrained decoding post.
+
+The article deliberately does not rely on a Markdown math extension. Equations
+are rendered here alongside the diagrams so the published Markdown is portable.
+"""
 
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch
+from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch, Rectangle
 
 OUT = Path(__file__).parent
 
-NAVY = "#102A43"
-BLUE = "#2F6690"
-TEAL = "#4F9D9D"
-PALE_TEAL = "#D9ECE8"
-CORAL = "#EF8354"
-PALE_CORAL = "#FBE1D5"
-CREAM = "#FBF7EF"
-SLATE = "#627D98"
-LIGHT = "#E8EEF2"
+# One restrained visual system for the full post.
+INK = "#14213D"
+MUTED = "#64748B"
+BLUE = "#2563EB"
+BLUE_LIGHT = "#DBEAFE"
+CYAN = "#0891B2"
+CYAN_LIGHT = "#CFFAFE"
+ORANGE = "#EA580C"
+ORANGE_LIGHT = "#FFEDD5"
+GREEN = "#15803D"
+GREEN_LIGHT = "#DCFCE7"
+RED = "#B91C1C"
+RED_LIGHT = "#FEE2E2"
+PAPER = "#FCFCFA"
+PANEL = "#F8FAFC"
+BORDER = "#D9E1EA"
 WHITE = "#FFFFFF"
-RED = "#C94C4C"
-GREEN = "#2F855A"
 
 
-def setup() -> None:
+def configure() -> None:
     plt.rcParams.update(
         {
-            "figure.facecolor": CREAM,
-            "axes.facecolor": CREAM,
-            "savefig.facecolor": CREAM,
+            "figure.facecolor": PAPER,
+            "axes.facecolor": PAPER,
+            "savefig.facecolor": PAPER,
             "font.family": "DejaVu Sans",
             "font.size": 11,
-            "axes.titleweight": "bold",
-            "axes.titlesize": 14,
-            "text.color": NAVY,
-            "axes.labelcolor": NAVY,
-            "xtick.color": SLATE,
-            "ytick.color": SLATE,
+            "text.color": INK,
+            "axes.labelcolor": INK,
+            "axes.titlecolor": INK,
+            "xtick.color": MUTED,
+            "ytick.color": MUTED,
+            "mathtext.fontset": "stix",
         }
     )
 
 
-def save(fig: plt.Figure, name: str) -> None:
-    fig.savefig(OUT / name, dpi=220, bbox_inches="tight", pad_inches=0.18)
+def save(fig: plt.Figure, filename: str) -> None:
+    fig.savefig(OUT / filename, dpi=220, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
 
-def rounded_box(ax, xy, width, height, text, *, facecolor=WHITE, edgecolor=LIGHT,
-                fontsize=11, color=NAVY, linewidth=1.5, radius=0.08):
-    x, y = xy
+def clean_canvas(figsize: tuple[float, float]) -> tuple[plt.Figure, plt.Axes]:
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+    return fig, ax
+
+
+def card(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    face: str = WHITE,
+    edge: str = BORDER,
+    radius: float = 2.0,
+    linewidth: float = 1.2,
+) -> FancyBboxPatch:
     patch = FancyBboxPatch(
         (x, y),
         width,
         height,
-        boxstyle=f"round,pad=0.02,rounding_size={radius}",
-        facecolor=facecolor,
-        edgecolor=edgecolor,
+        boxstyle=f"round,pad=0.015,rounding_size={radius}",
+        facecolor=face,
+        edgecolor=edge,
         linewidth=linewidth,
     )
     ax.add_patch(patch)
-    ax.text(x + width / 2, y + height / 2, text, ha="center", va="center",
-            fontsize=fontsize, color=color)
     return patch
 
 
-def arrow(ax, start, end, *, color=SLATE, linewidth=1.7, mutation_scale=13,
-          connectionstyle="arc3"):
-    patch = FancyArrowPatch(
-        start,
-        end,
-        arrowstyle="-|>",
-        mutation_scale=mutation_scale,
-        linewidth=linewidth,
+def label(ax: plt.Axes, x: float, y: float, text: str, *, color: str = MUTED) -> None:
+    ax.text(
+        x,
+        y,
+        text,
         color=color,
-        connectionstyle=connectionstyle,
-        shrinkA=6,
-        shrinkB=6,
+        fontsize=8.5,
+        fontweight="bold",
+        ha="left",
+        va="center",
+        family="DejaVu Sans",
+    )
+
+
+def chip(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    width: float,
+    text: str,
+    *,
+    face: str = WHITE,
+    edge: str = BORDER,
+    color: str = INK,
+    alpha: float = 1.0,
+    strike: bool = False,
+) -> None:
+    patch = FancyBboxPatch(
+        (x, y),
+        width,
+        8,
+        boxstyle="round,pad=0.01,rounding_size=2",
+        facecolor=face,
+        edgecolor=edge,
+        linewidth=1.2,
+        alpha=alpha,
     )
     ax.add_patch(patch)
-    return patch
+    ax.text(
+        x + width / 2,
+        y + 4,
+        text,
+        ha="center",
+        va="center",
+        fontsize=10,
+        color=color,
+        alpha=alpha,
+        family="DejaVu Sans Mono",
+    )
+    if strike:
+        ax.plot([x + 1.3, x + width - 1.3], [y + 1.2, y + 6.8], color=RED, lw=1.6)
 
 
-def prompting_vs_masking() -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.8), gridspec_kw={"wspace": 0.28})
-    tokens = ["Jan", "2023", "the", "20", "-", "7"]
-    scores = np.array([8.8, 7.5, 6.9, 6.3, 4.6, 3.8])
-    colors = [CORAL, TEAL, CORAL, TEAL, CORAL, TEAL]
-
-    for ax in axes:
-        ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
-        ax.tick_params(axis="both", length=0)
-        ax.grid(axis="x", color=LIGHT, linewidth=0.8, zorder=0)
-
-    axes[0].barh(tokens[::-1], scores[::-1], color=colors[::-1], height=0.62, zorder=3)
-    axes[0].set_xlim(0, 10)
-    axes[0].set_xlabel("model score (illustrative)")
-    axes[0].set_title("Prompting changes preferences")
-    axes[0].text(
-        0,
-        -0.20,
-        "The model can still choose an invalid continuation.",
-        transform=axes[0].transAxes,
-        color=SLATE,
-        fontsize=10.5,
-        va="top",
+def arrow(
+    ax: plt.Axes,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    color: str = MUTED,
+    width: float = 1.5,
+    curve: float = 0,
+) -> None:
+    ax.add_patch(
+        FancyArrowPatch(
+            start,
+            end,
+            arrowstyle="-|>",
+            mutation_scale=12,
+            linewidth=width,
+            color=color,
+            connectionstyle=f"arc3,rad={curve}",
+            shrinkA=4,
+            shrinkB=4,
+        )
     )
 
-    masked_scores = scores.copy()
-    valid = np.array([False, True, False, True, False, True])
-    masked_scores[~valid] = 0
-    masked_colors = np.where(valid, TEAL, LIGHT)
-    axes[1].barh(tokens[::-1], masked_scores[::-1], color=masked_colors[::-1], height=0.62, zorder=3)
-    for index, (token, is_valid) in enumerate(zip(tokens[::-1], valid[::-1])):
-        if not is_valid:
-            axes[1].text(0.18, index, r"$-\infty$", va="center", ha="left", color=RED, fontsize=11)
-    axes[1].set_xlim(0, 10)
-    axes[1].set_xlabel("score after the regex mask")
-    axes[1].set_title("Constrained decoding removes choices")
-    axes[1].text(
-        0,
-        -0.20,
-        "Invalid tokens have zero probability after softmax.",
-        transform=axes[1].transAxes,
-        color=SLATE,
-        fontsize=10.5,
-        va="top",
-    )
 
-    fig.suptitle("A prompt asks for a format; a decoding mask enforces it", fontsize=17,
-                 fontweight="bold", y=1.04, color=NAVY)
+def cover() -> None:
+    fig, ax = clean_canvas((16, 8.6))
+
+    # Faint construction grid makes the image feel technical without adding noise.
+    for x in np.arange(5, 100, 5):
+        ax.plot([x, x], [7, 93], color="#EEF2F6", lw=0.45, zorder=0)
+    for y in np.arange(10, 95, 5):
+        ax.plot([4, 96], [y, y], color="#EEF2F6", lw=0.45, zorder=0)
+
+    label(ax, 7, 87, "01  MODEL LOGITS", color=BLUE)
+    card(ax, 6, 21, 24, 61, face=WHITE)
+    candidates = [
+        ('"Jan"', 0.92, False),
+        ('"2023"', 0.79, True),
+        ('"the"', 0.64, False),
+        ('"20"', 0.58, True),
+        ('"-"', 0.31, False),
+    ]
+    for i, (token, score, valid) in enumerate(candidates):
+        y = 69 - i * 10
+        ax.text(9, y + 2.4, token, family="DejaVu Sans Mono", fontsize=10.5, va="center")
+        ax.add_patch(Rectangle((16, y), 10 * score, 4.8, color=BLUE if valid else "#CBD5E1"))
+        ax.text(27.5, y + 2.4, f"{score:.2f}", ha="right", va="center", fontsize=8.8, color=MUTED)
+
+    label(ax, 38, 87, "02  REGEX STATE", color=ORANGE)
+    card(ax, 36, 21, 28, 61, face=WHITE)
+    ax.text(
+        50,
+        72,
+        r"\d{4}-\d{2}-\d{2}",
+        ha="center",
+        va="center",
+        family="DejaVu Sans Mono",
+        fontsize=14,
+        color=INK,
+    )
+    state_x = np.linspace(40, 60, 6)
+    for i, x in enumerate(state_x):
+        if i < len(state_x) - 1:
+            arrow(ax, (x + 1.3, 52), (state_x[i + 1] - 1.3, 52), color=ORANGE, width=1.6)
+        face = ORANGE_LIGHT if i == 2 else WHITE
+        edge = ORANGE if i == 2 else BORDER
+        ax.add_patch(Circle((x, 52), 1.65, facecolor=face, edgecolor=edge, linewidth=1.5))
+    ax.text(50, 43.5, "current state", ha="center", fontsize=9, color=ORANGE, fontweight="bold")
+    ax.text(50, 34.5, "valid token mask", ha="center", fontsize=9, color=MUTED)
+    for i in range(12):
+        x = 42.3 + (i % 6) * 3.1
+        y = 27.5 + (i // 6) * 3.4
+        ax.add_patch(
+            Rectangle(
+                (x, y),
+                2.25,
+                2.25,
+                facecolor=CYAN if i in (1, 3, 6, 8) else "#E2E8F0",
+                edgecolor="none",
+            )
+        )
+
+    label(ax, 72, 87, "03  VALID OUTPUT", color=GREEN)
+    card(ax, 70, 21, 24, 61, face=WHITE)
+    output = list("2023-01-01")
+    start_x = 72.1
+    for i, char in enumerate(output):
+        x = start_x + (i % 5) * 4.0
+        y = 56 if i < 5 else 45
+        face = GREEN_LIGHT if char != "-" else ORANGE_LIGHT
+        edge = GREEN if char != "-" else ORANGE
+        chip(ax, x, y, 3.2, char, face=face, edge=edge, color=INK)
+    ax.text(82, 35, "fullmatch ✓", ha="center", color=GREEN, fontsize=11, fontweight="bold")
+
+    arrow(ax, (30.5, 51.5), (35.5, 51.5), color=BLUE, width=2)
+    arrow(ax, (64.5, 51.5), (69.5, 51.5), color=ORANGE, width=2)
+    ax.text(50, 9, "MODEL PREFERENCE  ×  FORMAL CONSTRAINT", ha="center", fontsize=10,
+            color=MUTED, fontweight="bold")
+    save(fig, "00_cover.png")
+
+
+def prompting_vs_constraints() -> None:
+    fig, ax = clean_canvas((13.6, 5.4))
+    label(ax, 5, 89, "SAME MODEL SCORES · DIFFERENT SUPPORT")
+
+    # Two lanes share the exact same candidate ordering.
+    lanes = [
+        ("PROMPT ONLY", 65, False, 'selects "Jan"', RED, RED_LIGHT),
+        ("REGEX MASK", 27, True, 'selects "2023"', GREEN, GREEN_LIGHT),
+    ]
+    candidate_tokens = ['"Jan"\n0.92', '"2023"\n0.79', '"the"\n0.64', '"20"\n0.58', '"-"\n0.31']
+    valid = [False, True, False, True, False]
+
+    for lane_name, y, constrained, outcome, outcome_color, outcome_face in lanes:
+        ax.text(5, y + 4, lane_name, va="center", fontsize=9, fontweight="bold",
+                color=BLUE if not constrained else ORANGE)
+        for i, token in enumerate(candidate_tokens):
+            x = 21 + i * 12.2
+            is_valid = valid[i]
+            disabled = constrained and not is_valid
+            selected = (not constrained and i == 0) or (constrained and i == 1)
+            face = BLUE_LIGHT if selected and not constrained else GREEN_LIGHT if selected else WHITE
+            edge = BLUE if selected and not constrained else GREEN if selected else BORDER
+            chip(
+                ax,
+                x,
+                y,
+                10.2,
+                token,
+                face=face,
+                edge=edge,
+                color=INK if not disabled else MUTED,
+                alpha=0.38 if disabled else 1.0,
+                strike=disabled,
+            )
+        arrow(ax, (82.5, y + 4), (87, y + 4), color=outcome_color, width=1.8)
+        card(ax, 87.5, y - 0.2, 9.5, 8.4, face=outcome_face, edge=outcome_color, radius=2)
+        ax.text(92.25, y + 4, outcome, ha="center", va="center", color=outcome_color,
+                fontsize=8.8, fontweight="bold")
+
+    ax.plot([5, 97], [51, 51], color=BORDER, lw=1)
+    ax.text(50, 8, "Masking changes which tokens can win; it does not change their original scores.",
+            ha="center", color=MUTED, fontsize=10)
     save(fig, "01_prompting_vs_constraints.png")
 
 
 def regex_to_fsm() -> None:
-    fig, ax = plt.subplots(figsize=(15.5, 4.7))
-    ax.set_xlim(-0.8, 10.9)
-    ax.set_ylim(-1.65, 1.55)
-    ax.axis("off")
+    fig, ax = clean_canvas((15.2, 5.6))
+    label(ax, 4, 92, "CHARACTER AUTOMATON")
+    ax.text(4, 86, r"\d{4} - \d{2} - \d{2}", family="DejaVu Sans Mono", fontsize=13,
+            color=INK, va="center")
 
-    labels = ["start", "1 digit", "2 digits", "3 digits", "year", "-", "1 digit",
-              "month", "-", "1 digit", "date"]
-    xs = np.arange(11)
-    for i in range(10):
-        arrow(ax, (xs[i] + 0.24, 0), (xs[i + 1] - 0.24, 0), color=BLUE, linewidth=1.6)
-        edge_label = "digit" if i not in (4, 7) else "-"
-        ax.text((xs[i] + xs[i + 1]) / 2, 0.35, edge_label, ha="center", va="center",
-                fontsize=9.5, color=SLATE)
+    xs = np.linspace(7, 93, 11)
+    edge_labels = ["digit", "digit", "digit", "digit", "-", "digit", "digit", "-", "digit", "digit"]
+    group_ranges = [(0, 4, "YEAR"), (5, 7, "MONTH"), (8, 10, "DAY")]
 
-    for i, (x, label) in enumerate(zip(xs, labels)):
-        fill = PALE_TEAL if i == 10 else WHITE
-        edge = TEAL if i == 10 else NAVY
-        ax.add_patch(Circle((x, 0), 0.25, facecolor=fill, edgecolor=edge, linewidth=2))
-        if i == 10:
-            ax.add_patch(Circle((x, 0), 0.18, facecolor="none", edgecolor=edge, linewidth=1.3))
-        ax.text(x, -0.52, f"s{i}", ha="center", va="center", fontweight="bold", fontsize=9.5)
-        ax.text(x, -0.86, label, ha="center", va="center", fontsize=8.4, color=SLATE)
+    for start, end, name in group_ranges:
+        left = xs[start] - 3.2
+        right = xs[end] + 3.2
+        ax.add_patch(
+            FancyBboxPatch(
+                (left, 34),
+                right - left,
+                35,
+                boxstyle="round,pad=0.01,rounding_size=2.5",
+                facecolor=PANEL,
+                edgecolor="none",
+            )
+        )
+        ax.text((left + right) / 2, 38.5, name, ha="center", va="center", fontsize=8.5,
+                color=MUTED, fontweight="bold")
 
-    ax.text(-0.72, 0.78, r"regex:  $\backslash d\{4\}$-$\backslash d\{2\}$-$\backslash d\{2\}$",
-            fontsize=14, fontweight="bold", color=NAVY)
+    for i, x in enumerate(xs):
+        if i < 10:
+            arrow(ax, (x + 1.45, 54), (xs[i + 1] - 1.45, 54), color=INK, width=1.25)
+            ax.text((x + xs[i + 1]) / 2, 59.5, edge_labels[i], ha="center", fontsize=8.3,
+                    color=ORANGE if edge_labels[i] == "-" else MUTED)
+        final = i == 10
+        ax.add_patch(
+            Circle(
+                (x, 54),
+                1.55,
+                facecolor=GREEN_LIGHT if final else WHITE,
+                edgecolor=GREEN if final else INK,
+                linewidth=1.45,
+            )
+        )
+        if final:
+            ax.add_patch(Circle((x, 54), 1.05, fill=False, edgecolor=GREEN, linewidth=1.0))
+        ax.text(x, 47.5, f"s{i}", ha="center", fontsize=8.5, color=MUTED)
 
-    # Show that one tokenizer token can traverse more than one character edge.
-    arrow(ax, (0.05, 0.34), (1.95, 0.34), color=CORAL, linewidth=2.2,
-          connectionstyle="arc3,rad=-0.35")
-    rounded_box(ax, (0.67, 0.78), 0.72, 0.38, 'token "20"', facecolor=PALE_CORAL,
-                edgecolor=CORAL, fontsize=9.5, color=NAVY, radius=0.09)
-    ax.text(1.03, 1.33, "one token, two transitions", ha="center", fontsize=9.3,
-            color=CORAL, fontweight="bold")
-
-    ax.text(5.0, -1.43,
-            "The state is the only prefix information needed to decide which token strings remain valid.",
-            ha="center", fontsize=11.2, color=SLATE)
-    fig.suptitle("The regex becomes a deterministic state machine", fontsize=17,
-                 fontweight="bold", y=0.99, color=NAVY)
+    # A tokenizer token can consume more than one character edge.
+    arrow(ax, (xs[0], 67), (xs[2], 67), color=BLUE, width=2.0, curve=-0.24)
+    card(ax, 10.2, 70, 11.2, 8.5, face=BLUE_LIGHT, edge=BLUE, radius=2)
+    ax.text(15.8, 74.25, 'token "20"', ha="center", va="center", family="DejaVu Sans Mono",
+            fontsize=9.5, color=BLUE, fontweight="bold")
+    ax.text(50, 18, "The state replaces the generated prefix; token strings may traverse several edges.",
+            ha="center", color=MUTED, fontsize=10)
     save(fig, "02_regex_to_fsm.png")
 
 
 def precomputed_tables() -> None:
-    states = ["s0\nstart", "s4\nyear", "s5\nafter -", "s7\nmonth", "s8\nafter -", "s10\nfinal"]
+    fig, ax = clean_canvas((14.8, 6.3))
+    label(ax, 4, 92, "DENSE LOOKUP AT STATE s4")
+
+    states = ["s0", "s4", "s5", "s7", "s8", "s10"]
     tokens = ['"7"', '"20"', '"-"', '"01"', '"Jan"', "EOS"]
-    next_state = np.array(
+    allowed = np.array(
         [
-            [1, 2, -1, 2, -1, -1],
-            [-1, -1, 5, -1, -1, -1],
-            [6, 7, -1, 7, -1, -1],
-            [-1, -1, 8, -1, -1, -1],
-            [9, 10, -1, 10, -1, -1],
-            [-1, -1, -1, -1, -1, 10],
+            [1, 1, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0],
+            [1, 1, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0],
+            [1, 1, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 1],
         ],
         dtype=int,
     )
-    allowed = next_state >= 0
 
-    fig, axes = plt.subplots(1, 2, figsize=(13.8, 5.5), gridspec_kw={"wspace": 0.3})
-    ax = axes[0]
-    ax.imshow(allowed, cmap=plt.matplotlib.colors.ListedColormap([LIGHT, TEAL]), aspect="auto")
-    ax.set_xticks(range(len(tokens)), tokens)
-    ax.set_yticks(range(len(states)), states)
-    ax.set_title("allowed[state, token]")
-    for i in range(allowed.shape[0]):
-        for j in range(allowed.shape[1]):
-            ax.text(j, i, "✓" if allowed[i, j] else "×", ha="center", va="center",
-                    color=WHITE if allowed[i, j] else SLATE, fontweight="bold", fontsize=13)
-    ax.tick_params(length=0)
-    ax.set_xlabel("token string")
-    ax.set_ylabel("current FSM state")
+    x0, y0 = 6, 23
+    cell_w, cell_h = 6.2, 8.0
+    for j, token in enumerate(tokens):
+        ax.text(x0 + 10 + j * cell_w + cell_w / 2, y0 + 6 * cell_h + 5.2, token,
+                ha="center", va="center", fontsize=8.6, family="DejaVu Sans Mono", color=MUTED)
+    for i, state in enumerate(states):
+        row_y = y0 + (5 - i) * cell_h
+        highlighted = state == "s4"
+        if highlighted:
+            card(ax, x0 + 1, row_y - 0.5, 48.5, cell_h + 1, face=ORANGE_LIGHT,
+                 edge=ORANGE, radius=1.5)
+        ax.text(x0 + 6.5, row_y + cell_h / 2, state, ha="center", va="center", fontsize=9.2,
+                color=ORANGE if highlighted else MUTED, fontweight="bold")
+        for j in range(6):
+            value = allowed[i, j]
+            face = CYAN if value else "#E2E8F0"
+            ax.add_patch(
+                FancyBboxPatch(
+                    (x0 + 10 + j * cell_w + 1.2, row_y + 1.3),
+                    3.8,
+                    5.3,
+                    boxstyle="round,pad=0.01,rounding_size=1",
+                    facecolor=face,
+                    edgecolor="none",
+                )
+            )
+            ax.text(x0 + 10 + j * cell_w + 3.1, row_y + 3.95, "1" if value else "0",
+                    ha="center", va="center", fontsize=8.7, color=WHITE if value else MUTED,
+                    fontweight="bold")
 
-    ax = axes[1]
-    ax.imshow(allowed, cmap=plt.matplotlib.colors.ListedColormap([LIGHT, PALE_CORAL]), aspect="auto")
-    ax.set_xticks(range(len(tokens)), tokens)
-    ax.set_yticks(range(len(states)), states)
-    ax.set_title("transition[state, token]")
-    for i in range(next_state.shape[0]):
-        for j in range(next_state.shape[1]):
-            value = "—" if next_state[i, j] < 0 else f"s{next_state[i, j]}"
-            ax.text(j, i, value, ha="center", va="center", color=NAVY if value != "—" else SLATE,
-                    fontweight="bold" if value != "—" else "normal", fontsize=11)
-    ax.tick_params(length=0)
-    ax.set_xlabel("chosen token string")
-    ax.set_ylabel("current FSM state")
+    arrow(ax, (56.5, 55), (62, 55), color=ORANGE, width=2)
+    label(ax, 63.5, 84, "GATHER + MASK + TRANSITION", color=ORANGE)
+    card(ax, 63, 62, 31, 15, face=PANEL, edge=BORDER)
+    ax.text(67, 71, "mask", fontsize=8.5, color=MUTED, fontweight="bold")
+    for j, token in enumerate(tokens):
+        x = 74 + j * 3.0
+        enabled = j == 2
+        ax.add_patch(Circle((x, 69.8), 0.95, facecolor=ORANGE if enabled else "#CBD5E1", edgecolor="none"))
+    ax.text(79, 64.7, "only the separator survives", ha="center", fontsize=8.8, color=INK)
 
-    fig.suptitle("Precomputation turns Python work into two tensor lookups", fontsize=17,
-                 fontweight="bold", y=1.02, color=NAVY)
-    fig.text(0.5, -0.01,
-             "The mask answers what may be sampled; the transition table advances every batch row independently.",
-             ha="center", color=SLATE, fontsize=10.8)
+    card(ax, 63, 38, 31, 15, face=WHITE, edge=ORANGE)
+    ax.text(67, 47, "argmax", fontsize=8.5, color=MUTED, fontweight="bold")
+    chip(ax, 79, 41.4, 7, '"-"', face=ORANGE_LIGHT, edge=ORANGE, color=ORANGE)
+
+    card(ax, 63, 14, 31, 15, face=WHITE, edge=GREEN)
+    ax.text(67, 23, "transition", fontsize=8.5, color=MUTED, fontweight="bold")
+    ax.text(78.5, 21.5, 'T[s4, "-"]  →  s5', ha="center", va="center",
+            family="DejaVu Sans Mono", fontsize=10, color=GREEN, fontweight="bold")
+    arrow(ax, (78.5, 61.5), (78.5, 53.5), color=ORANGE, width=1.6)
+    arrow(ax, (78.5, 37.5), (78.5, 29.5), color=GREEN, width=1.6)
     save(fig, "03_precomputed_tables.png")
 
 
 def benchmark_results() -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(16.2, 5.3), gridspec_kw={"wspace": 0.48})
+    fig, axes = plt.subplots(1, 3, figsize=(15.2, 5.8), gridspec_kw={"wspace": 0.44})
+    fig.patch.set_facecolor(PAPER)
 
-    methods = ["Partial regex", "FSM: rescan prefix", "FSM: track state", "Precomputed row"]
-    values = [24.908, 50.114, 23.697, 0.000542]
-    colors = [BLUE, CORAL, TEAL, NAVY]
+    # Constraint lookup uses a log scale because the precomputed row is orders smaller.
     ax = axes[0]
-    bars = ax.barh(methods[::-1], values[::-1], color=colors[::-1], height=0.62)
+    methods = ["partial regex", "FSM rescan", "FSM state", "table row"]
+    values = [24.908, 50.114, 23.697, 0.000542]
+    colors = ["#94A3B8", ORANGE, CYAN, BLUE]
+    ax.barh(methods[::-1], values[::-1], color=colors[::-1], height=0.52)
     ax.set_xscale("log")
     ax.set_xlim(0.0002, 100)
-    ax.set_xlabel("median milliseconds per mask step (log scale)")
-    ax.set_title("Precompute the constraint")
+    ax.set_title("Constraint lookup", loc="left", fontsize=11, fontweight="bold", pad=14)
+    ax.set_xlabel("milliseconds · log scale", fontsize=8.5)
+    ax.grid(axis="x", which="major", color=BORDER, linewidth=0.8)
     ax.set_axisbelow(True)
-    ax.grid(axis="x", which="major", color=LIGHT, linewidth=0.8, zorder=0)
-    ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    for bar, value in zip(bars, values[::-1]):
-        label = f"{value:.6f} ms" if value < 0.01 else f"{value:.1f} ms"
-        ax.text(value * 1.22, bar.get_y() + bar.get_height() / 2, label, va="center",
-                fontsize=9.2, color=NAVY)
+    for i, value in enumerate(values[::-1]):
+        text = f"{value:.6f}" if value < 0.01 else f"{value:.1f}"
+        ax.text(value * 1.22, i, text, va="center", fontsize=8.2, color=INK)
 
-    ax = axes[1]
-    labels = ["No cache", "KV cache"]
-    values_cache = [3592.51, 456.41]
-    bars = ax.bar(labels, values_cache, color=[CORAL, TEAL], width=0.58)
-    ax.set_ylabel("median milliseconds")
-    ax.set_title("Cache model attention")
-    ax.grid(axis="y", color=LIGHT, linewidth=0.8, zorder=0)
-    ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
-    ax.tick_params(axis="x", length=0)
-    for bar, value in zip(bars, values_cache):
-        ax.text(bar.get_x() + bar.get_width() / 2, value + 95, f"{value / 1000:.2f} s",
-                ha="center", va="bottom", fontweight="bold", color=NAVY)
-    ax.text(0.5, 0.84, "7.87×", transform=ax.transAxes, ha="center", va="center",
-            fontsize=18, fontweight="bold", color=GREEN)
+    def dumbbell(
+        axis: plt.Axes,
+        title: str,
+        before: float,
+        after: float,
+        before_label: str,
+        after_label: str,
+        speedup: str,
+    ) -> None:
+        axis.set_xlim(0, before * 1.18)
+        axis.set_ylim(-0.8, 1.1)
+        axis.set_title(title, loc="left", fontsize=11, fontweight="bold", pad=14)
+        axis.plot([after, before], [0, 0], color=BORDER, lw=5, solid_capstyle="round")
+        axis.scatter([before], [0], s=150, color=ORANGE, zorder=3)
+        axis.scatter([after], [0], s=150, color=GREEN, zorder=3)
+        axis.text(before, -0.24, before_label, ha="center", va="top", fontsize=8.5, color=ORANGE,
+                  fontweight="bold")
+        axis.text(after, -0.24, after_label, ha="center", va="top", fontsize=8.5, color=GREEN,
+                  fontweight="bold")
+        axis.text((before + after) / 2, 0.34, speedup, ha="center", va="center", fontsize=15,
+                  color=GREEN, fontweight="bold")
+        axis.text((before + after) / 2, 0.18, "faster", ha="center", va="center", fontsize=8,
+                  color=MUTED)
+        axis.set_yticks([])
+        axis.set_xlabel("median milliseconds", fontsize=8.5)
+        axis.grid(axis="x", color=BORDER, linewidth=0.8)
+        axis.set_axisbelow(True)
 
-    ax = axes[2]
-    labels = ["4 sequential", "batch of 4"]
-    values_batch = [2951.45, 1684.41]
-    bars = ax.bar(labels, values_batch, color=[CORAL, TEAL], width=0.58)
-    ax.set_ylabel("median milliseconds")
-    ax.set_title("Batch independent rows")
-    ax.grid(axis="y", color=LIGHT, linewidth=0.8, zorder=0)
-    ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
-    ax.tick_params(axis="x", length=0)
-    for bar, value in zip(bars, values_batch):
-        ax.text(bar.get_x() + bar.get_width() / 2, value + 80, f"{value / 1000:.2f} s",
-                ha="center", va="bottom", fontweight="bold", color=NAVY)
-    ax.text(0.5, 0.84, "1.75×", transform=ax.transAxes, ha="center", va="center",
-            fontsize=18, fontweight="bold", color=GREEN)
+    dumbbell(axes[1], "KV cache", 3592.51, 456.41, "3.59 s", "0.46 s", "7.87×")
+    dumbbell(axes[2], "Batching", 2951.45, 1684.41, "2.95 s", "1.68 s", "1.75×")
 
-    fig.suptitle("Three optimizations act on three different costs", fontsize=17,
-                 fontweight="bold", y=1.03, color=NAVY)
-    fig.text(0.5, -0.025,
-             "SmolLM2-135M-Instruct, 49,152-token vocabulary, CPU, four PyTorch threads; medians exclude model loading.",
-             ha="center", color=SLATE, fontsize=10.4)
+    for ax in axes:
+        ax.set_facecolor(PAPER)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(length=0, labelsize=8.5)
+
+    fig.text(
+        0.5,
+        -0.01,
+        "SmolLM2-135M-Instruct · CPU · four PyTorch threads · medians exclude model loading",
+        ha="center",
+        color=MUTED,
+        fontsize=8.8,
+    )
     save(fig, "04_benchmark_results.png")
 
 
 def batched_state_tracking() -> None:
-    fig, ax = plt.subplots(figsize=(13.8, 5.7))
-    ax.set_xlim(0, 13.8)
-    ax.set_ylim(0, 6.3)
-    ax.axis("off")
+    fig, ax = clean_canvas((14.6, 6.0))
+    label(ax, 4, 92, "ONE REGEX TABLE · THREE INDEPENDENT ROWS")
 
-    rounded_box(ax, (0.35, 4.85), 2.0, 0.72, "model logits\n[B, V]", facecolor=WHITE,
-                edgecolor=BLUE, fontsize=11.5)
-    rounded_box(ax, (3.05, 4.85), 2.1, 0.72, "FSM states\n[B]", facecolor=WHITE,
-                edgecolor=TEAL, fontsize=11.5)
-    rounded_box(ax, (5.85, 4.85), 2.3, 0.72, "allowed[states]\n[B, V]", facecolor=PALE_TEAL,
-                edgecolor=TEAL, fontsize=11.5)
-    rounded_box(ax, (8.85, 4.85), 2.0, 0.72, "masked argmax\n[B]", facecolor=PALE_CORAL,
-                edgecolor=CORAL, fontsize=11.5)
-    rounded_box(ax, (11.55, 4.85), 1.9, 0.72, "next states\n[B]", facecolor=WHITE,
-                edgecolor=NAVY, fontsize=11.5)
-    for left, right in [((2.35, 5.21), (3.05, 5.21)), ((5.15, 5.21), (5.85, 5.21)),
-                        ((8.15, 5.21), (8.85, 5.21)), ((10.85, 5.21), (11.55, 5.21))]:
-        arrow(ax, left, right, color=SLATE)
+    card(ax, 37, 78, 26, 12, face=BLUE_LIGHT, edge=BLUE)
+    ax.text(50, 84, "shared allowed[state, token]", ha="center", va="center",
+            family="DejaVu Sans Mono", fontsize=10, color=BLUE, fontweight="bold")
 
     rows = [
-        ("row 0", "2023", "s4", '"-"', "s5"),
-        ("row 1", "19", "s2", '"84"', "s4"),
-        ("row 2", "2024-0", "s6", '"7"', "s7"),
+        ("row 0", "2023", "s4", '"-"', "s5", ORANGE),
+        ("row 1", "19", "s2", '"84"', "s4", CYAN),
+        ("row 2", "2024-0", "s6", '"7"', "s7", GREEN),
     ]
-    ys = [3.55, 2.35, 1.15]
-    for (row, prefix, state, token, nxt), y in zip(rows, ys):
-        ax.text(0.35, y, row, va="center", fontweight="bold", color=SLATE)
-        rounded_box(ax, (1.2, y - 0.33), 2.55, 0.66, prefix, facecolor=WHITE,
-                    edgecolor=LIGHT, fontsize=11)
-        rounded_box(ax, (4.15, y - 0.33), 1.15, 0.66, state, facecolor=PALE_TEAL,
-                    edgecolor=TEAL, fontsize=11, color=NAVY)
-        rounded_box(ax, (7.05, y - 0.33), 1.25, 0.66, token, facecolor=PALE_CORAL,
-                    edgecolor=CORAL, fontsize=11, color=NAVY)
-        rounded_box(ax, (10.15, y - 0.33), 1.15, 0.66, nxt, facecolor=WHITE,
-                    edgecolor=NAVY, fontsize=11)
-        arrow(ax, (3.75, y), (4.15, y), color=SLATE)
-        arrow(ax, (5.3, y), (7.05, y), color=SLATE)
-        arrow(ax, (8.3, y), (10.15, y), color=SLATE)
+    ys = [59, 38, 17]
+    for (row, prefix, state, token, next_state, color), y in zip(rows, ys):
+        ax.text(4, y + 5, row, fontsize=8.5, color=MUTED, fontweight="bold", va="center")
+        card(ax, 11, y, 19, 10, face=WHITE, edge=BORDER)
+        ax.text(20.5, y + 5, prefix, ha="center", va="center", family="DejaVu Sans Mono",
+                fontsize=10, color=INK)
+        arrow(ax, (30.5, y + 5), (36, y + 5), color=MUTED)
+        card(ax, 36.5, y, 9, 10, face=PANEL, edge=color)
+        ax.text(41, y + 5, state, ha="center", va="center", fontsize=10, color=color,
+                fontweight="bold")
+        arrow(ax, (45.8, y + 5), (54, y + 5), color=color)
+        card(ax, 54.5, y, 14, 10, face=PANEL, edge=BORDER)
+        ax.text(61.5, y + 5, f"mask[{state}]", ha="center", va="center",
+                family="DejaVu Sans Mono", fontsize=9, color=INK)
+        arrow(ax, (68.8, y + 5), (76, y + 5), color=MUTED)
+        chip(ax, 76.5, y + 1, 8, token, face=WHITE, edge=color, color=color)
+        arrow(ax, (84.8, y + 5), (90, y + 5), color=color)
+        card(ax, 90.5, y, 6.5, 10, face=WHITE, edge=color)
+        ax.text(93.75, y + 5, next_state, ha="center", va="center", fontsize=9.5,
+                color=color, fontweight="bold")
+        arrow(ax, (50, 78), (61.5, y + 10.5), color="#94A3B8", width=1.0)
 
-    ax.text(6.9, 0.28,
-            "A batch shares the regex tables, but each row carries its own state and finished flag.",
-            ha="center", color=SLATE, fontsize=11)
-    fig.suptitle("Batching is vectorized state bookkeeping", fontsize=17,
-                 fontweight="bold", y=0.99, color=NAVY)
+    ax.text(50, 5, "Each row carries its own state, finished flag, and generated length.",
+            ha="center", color=MUTED, fontsize=9.8)
     save(fig, "05_batched_state_tracking.png")
 
 
+def equation_card(filename: str, expression: str, number: int, *, height: float = 1.65) -> None:
+    fig = plt.figure(figsize=(13.5, height), facecolor=PAPER)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+    ax.add_patch(
+        FancyBboxPatch(
+            (1, 4),
+            98,
+            92,
+            boxstyle="round,pad=0.01,rounding_size=2.5",
+            facecolor=PANEL,
+            edgecolor=BORDER,
+            linewidth=1.0,
+        )
+    )
+    ax.text(50, 51, f"${expression}$", ha="center", va="center", fontsize=21, color=INK)
+    ax.text(96, 18, f"({number})", ha="right", va="center", fontsize=10, color=MUTED)
+    save(fig, filename)
+
+
+def equation_one() -> None:
+    fig = plt.figure(figsize=(13.5, 2.45), facecolor=PAPER)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+    ax.add_patch(
+        FancyBboxPatch(
+            (1, 3),
+            98,
+            94,
+            boxstyle="round,pad=0.01,rounding_size=2.5",
+            facecolor=PANEL,
+            edgecolor=BORDER,
+            linewidth=1.0,
+        )
+    )
+    ax.text(34, 51, r"$\tilde{z}_v =$", ha="right", va="center", fontsize=23, color=INK)
+    ax.text(36.5, 51, "{", ha="center", va="center", fontsize=65, color=INK, family="STIXGeneral")
+    ax.text(39, 66, r"$z_v$", ha="left", va="center", fontsize=20, color=INK)
+    ax.text(48, 66, r"$\mathrm{if}\ v \in A(s_t)$", ha="left", va="center", fontsize=18, color=INK)
+    ax.text(39, 37, r"$-\infty$", ha="left", va="center", fontsize=20, color=INK)
+    ax.text(48, 37, r"$\mathrm{if}\ v \notin A(s_t)$", ha="left", va="center", fontsize=18, color=INK)
+    ax.text(96, 15, "(1)", ha="right", va="center", fontsize=10, color=MUTED)
+    save(fig, "equation_01.png")
+
+
+def equations() -> None:
+    equation_one()
+    equation_card(
+        "equation_02.png",
+        r"O\!\left(\sum_{t=1}^{T} V(L_t + K)\right)",
+        2,
+    )
+    equation_card(
+        "equation_03.png",
+        r"\delta^{*}(s,c_1c_2\ldots c_k)=\delta(\ldots\delta(\delta(s,c_1),c_2)\ldots,c_k)",
+        3,
+    )
+    equation_card(
+        "equation_04.png",
+        r"s_{t+1}=\delta^{*}\!\left(s_t,\mathrm{str}(v_t)\right)",
+        4,
+    )
+    equation_card(
+        "equation_05.png",
+        r"\mathrm{allowed}[s,v]=\mathbb{1}\!\left[\delta^{*}(s,\mathrm{str}(v))\neq\varnothing\right]",
+        5,
+    )
+    equation_card(
+        "equation_06.png",
+        r"\mathrm{transition}[s,v]=\delta^{*}\!\left(s,\mathrm{str}(v)\right)",
+        6,
+    )
+    equation_card(
+        "equation_07.png",
+        r"11\times49{,}152\times(1+8)\ \mathrm{bytes}\;\approx\;4.64\ \mathrm{MiB}",
+        7,
+    )
+    equation_card(
+        "equation_08.png",
+        r"\mathrm{decode}([v_1,v_2])=\mathrm{decode}([v_1])+\mathrm{decode}([v_2])",
+        8,
+    )
+
+
 if __name__ == "__main__":
-    setup()
-    prompting_vs_masking()
+    configure()
+    cover()
+    prompting_vs_constraints()
     regex_to_fsm()
     precomputed_tables()
     benchmark_results()
     batched_state_tracking()
-    print(f"Wrote figures to {OUT}")
+    equations()
+    print(f"Wrote diagrams and equations to {OUT}")
