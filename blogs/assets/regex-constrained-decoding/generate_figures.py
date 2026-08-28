@@ -1,7 +1,7 @@
-"""Generate every visual used by the regex-constrained decoding post.
+"""Generate every code-drawn diagram used by the regex-constrained decoding post.
 
-The article deliberately does not rely on a Markdown math extension. Equations
-are rendered here alongside the diagrams so the published Markdown is portable.
+The article keeps its three equations as native LaTeX in Markdown. This script
+owns only the explanatory diagrams and benchmark visual.
 """
 
 from pathlib import Path
@@ -412,6 +412,195 @@ def precomputed_tables() -> None:
     save(fig, "03_precomputed_tables.png")
 
 
+def accepting_not_terminal() -> None:
+    fig, ax = clean_canvas((13.2, 4.7))
+    label(ax, 4, 91, "REGEX a+ · ACCEPTING IS NOT TERMINAL", color=ORANGE)
+
+    ax.text(5, 55, "start", fontsize=9, color=MUTED, va="center")
+    arrow(ax, (12, 55), (24, 55), color=INK, width=1.5)
+
+    ax.add_patch(Circle((29, 55), 3.2, facecolor=WHITE, edgecolor=INK, linewidth=1.5))
+    ax.text(29, 55, "s0", ha="center", va="center", fontsize=10, color=INK)
+
+    arrow(ax, (32.5, 55), (47, 55), color=BLUE, width=1.8)
+    ax.text(
+        39.5,
+        61,
+        '"a"',
+        ha="center",
+        fontsize=10,
+        color=BLUE,
+        family="DejaVu Sans Mono",
+        fontweight="bold",
+    )
+
+    ax.add_patch(
+        Circle((52, 55), 4.0, facecolor=GREEN_LIGHT, edgecolor=GREEN, linewidth=1.8)
+    )
+    ax.add_patch(Circle((52, 55), 3.2, fill=False, edgecolor=GREEN, linewidth=1.2))
+    ax.text(
+        52,
+        55,
+        "s1",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color=GREEN,
+        fontweight="bold",
+    )
+    ax.text(
+        52, 42, "accepting", ha="center", fontsize=9, color=GREEN, fontweight="bold"
+    )
+
+    ax.add_patch(
+        FancyArrowPatch(
+            (48.5, 61.5),
+            (55.5, 61.5),
+            arrowstyle="-|>",
+            mutation_scale=12,
+            linewidth=1.7,
+            color=BLUE,
+            connectionstyle="arc3,rad=-1.25",
+        )
+    )
+    ax.text(
+        52,
+        80,
+        'another "a"',
+        ha="center",
+        fontsize=9,
+        color=BLUE,
+        family="DejaVu Sans Mono",
+        fontweight="bold",
+    )
+
+    arrow(ax, (56.5, 55), (72, 55), color=ORANGE, width=1.8)
+    chip(ax, 73, 51, 13, "EOS", face=ORANGE_LIGHT, edge=ORANGE, color=ORANGE)
+    ax.text(
+        79.5, 42, "stop here", ha="center", fontsize=9, color=ORANGE, fontweight="bold"
+    )
+
+    card(ax, 87.5, 36, 9.5, 38, face=PANEL, edge=BORDER, radius=2)
+    ax.text(92.25, 67, "LEGAL", ha="center", fontsize=8, color=MUTED, fontweight="bold")
+    ax.text(
+        92.25,
+        57,
+        '"a"',
+        ha="center",
+        fontsize=11,
+        color=BLUE,
+        family="DejaVu Sans Mono",
+        fontweight="bold",
+    )
+    ax.text(
+        92.25,
+        47,
+        "EOS",
+        ha="center",
+        fontsize=10,
+        color=ORANGE,
+        family="DejaVu Sans Mono",
+        fontweight="bold",
+    )
+
+    ax.text(
+        50,
+        13,
+        "The regex already matches at s1, but the language can still continue.",
+        ha="center",
+        color=MUTED,
+        fontsize=10,
+    )
+    save(fig, "06_accepting_not_terminal.png")
+
+
+def three_inner_loops() -> None:
+    fig, ax = clean_canvas((15.2, 6.7))
+    label(ax, 3, 94, "SAME QUESTION · WHICH TOKENS ARE ALLOWED?")
+
+    columns = [
+        (
+            3,
+            BLUE,
+            BLUE_LIGHT,
+            "ATTEMPT 1",
+            "REGEX QUERY",
+            "for token in vocab",
+            "fullmatch(prefix + token,\npartial=True)",
+            "24.9 ms",
+            "prefix reparsed for every token",
+        ),
+        (
+            36,
+            CYAN,
+            CYAN_LIGHT,
+            "ATTEMPT 2",
+            "FSM WALK",
+            "for token in vocab",
+            "walk_fsm(state, token)",
+            "23.7 ms",
+            "state retained; vocabulary loop remains",
+        ),
+        (
+            69,
+            GREEN,
+            GREEN_LIGHT,
+            "ATTEMPT 3",
+            "ROW LOOKUP",
+            "one tensor gather",
+            "allowed[state]",
+            "0.000542 ms",
+            "constraint lookup only",
+        ),
+    ]
+
+    for x, color, face, attempt, title, step_one, step_two, timing, takeaway in columns:
+        card(ax, x, 21, 28, 66, face=WHITE, edge=color, radius=2.5, linewidth=1.4)
+        label(ax, x + 3, 81, attempt, color=color)
+        ax.text(x + 3, 73, title, fontsize=12, color=INK, fontweight="bold")
+
+        card(ax, x + 3, 56, 22, 10, face=PANEL, edge=BORDER, radius=1.5)
+        ax.text(
+            x + 14,
+            61,
+            step_one,
+            ha="center",
+            va="center",
+            fontsize=8.7,
+            color=INK,
+            family="DejaVu Sans Mono",
+        )
+        arrow(ax, (x + 14, 55.5), (x + 14, 49.5), color=color, width=1.5)
+        card(ax, x + 3, 38, 22, 11, face=face, edge=color, radius=1.5)
+        ax.text(
+            x + 14,
+            43.5,
+            step_two,
+            ha="center",
+            va="center",
+            fontsize=8.2,
+            color=color,
+            family="DejaVu Sans Mono",
+            fontweight="bold",
+        )
+        ax.text(
+            x + 14, 31, timing, ha="center", fontsize=13, color=color, fontweight="bold"
+        )
+        ax.text(x + 14, 25, takeaway, ha="center", fontsize=7.8, color=MUTED)
+
+    arrow(ax, (31.5, 54), (35.5, 54), color=MUTED, width=1.3)
+    arrow(ax, (64.5, 54), (68.5, 54), color=MUTED, width=1.3)
+    ax.text(
+        50,
+        10,
+        "The row lookup excludes dense masking, argmax, and model execution.",
+        ha="center",
+        color=MUTED,
+        fontsize=9.5,
+    )
+    save(fig, "07_three_inner_loops.png")
+
+
 def benchmark_results() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(15.2, 5.8), gridspec_kw={"wspace": 0.44})
     fig.patch.set_facecolor(PAPER)
@@ -520,101 +709,14 @@ def batched_state_tracking() -> None:
     save(fig, "05_batched_state_tracking.png")
 
 
-def equation_card(filename: str, expression: str, number: int, *, height: float = 1.65) -> None:
-    fig = plt.figure(figsize=(13.5, height), facecolor=PAPER)
-    ax = fig.add_axes((0, 0, 1, 1))
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 100)
-    ax.axis("off")
-    ax.add_patch(
-        FancyBboxPatch(
-            (1, 4),
-            98,
-            92,
-            boxstyle="round,pad=0.01,rounding_size=2.5",
-            facecolor=PANEL,
-            edgecolor=BORDER,
-            linewidth=1.0,
-        )
-    )
-    ax.text(50, 51, f"${expression}$", ha="center", va="center", fontsize=21, color=INK)
-    ax.text(96, 18, f"({number})", ha="right", va="center", fontsize=10, color=MUTED)
-    save(fig, filename)
-
-
-def equation_one() -> None:
-    fig = plt.figure(figsize=(13.5, 2.45), facecolor=PAPER)
-    ax = fig.add_axes((0, 0, 1, 1))
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 100)
-    ax.axis("off")
-    ax.add_patch(
-        FancyBboxPatch(
-            (1, 3),
-            98,
-            94,
-            boxstyle="round,pad=0.01,rounding_size=2.5",
-            facecolor=PANEL,
-            edgecolor=BORDER,
-            linewidth=1.0,
-        )
-    )
-    ax.text(34, 51, r"$\tilde{z}_v =$", ha="right", va="center", fontsize=23, color=INK)
-    ax.text(36.5, 51, "{", ha="center", va="center", fontsize=65, color=INK, family="STIXGeneral")
-    ax.text(39, 66, r"$z_v$", ha="left", va="center", fontsize=20, color=INK)
-    ax.text(48, 66, r"$\mathrm{if}\ v \in A(s_t)$", ha="left", va="center", fontsize=18, color=INK)
-    ax.text(39, 37, r"$-\infty$", ha="left", va="center", fontsize=20, color=INK)
-    ax.text(48, 37, r"$\mathrm{if}\ v \notin A(s_t)$", ha="left", va="center", fontsize=18, color=INK)
-    ax.text(96, 15, "(1)", ha="right", va="center", fontsize=10, color=MUTED)
-    save(fig, "equation_01.png")
-
-
-def equations() -> None:
-    equation_one()
-    equation_card(
-        "equation_02.png",
-        r"O\!\left(\sum_{t=1}^{T} V(L_t + K)\right)",
-        2,
-    )
-    equation_card(
-        "equation_03.png",
-        r"\delta^{*}(s,c_1c_2\ldots c_k)=\delta(\ldots\delta(\delta(s,c_1),c_2)\ldots,c_k)",
-        3,
-    )
-    equation_card(
-        "equation_04.png",
-        r"s_{t+1}=\delta^{*}\!\left(s_t,\mathrm{str}(v_t)\right)",
-        4,
-    )
-    equation_card(
-        "equation_05.png",
-        r"\mathrm{allowed}[s,v]=\mathbb{1}\!\left[\delta^{*}(s,\mathrm{str}(v))\neq\varnothing\right]",
-        5,
-    )
-    equation_card(
-        "equation_06.png",
-        r"\mathrm{transition}[s,v]=\delta^{*}\!\left(s,\mathrm{str}(v)\right)",
-        6,
-    )
-    equation_card(
-        "equation_07.png",
-        r"11\times49{,}152\times(1+8)\ \mathrm{bytes}\;\approx\;4.64\ \mathrm{MiB}",
-        7,
-    )
-    equation_card(
-        "equation_08.png",
-        r"\mathrm{decode}([v_1,v_2])=\mathrm{decode}([v_1])+\mathrm{decode}([v_2])",
-        8,
-    )
-
-
 if __name__ == "__main__":
     configure()
     cover()
     prompting_vs_constraints()
     regex_to_fsm()
+    accepting_not_terminal()
     precomputed_tables()
+    three_inner_loops()
     benchmark_results()
     batched_state_tracking()
-    equations()
-    print(f"Wrote diagrams and equations to {OUT}")
+    print(f"Wrote diagrams to {OUT}")
