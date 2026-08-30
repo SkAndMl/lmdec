@@ -51,7 +51,7 @@ z_v, & v \in A(s_t) \\
 \end{cases}
 $$
 
-Softmax converts a logit `z` into a probability using `exp(z)`. Since `exp(-∞) = 0`, every masked token receives probability zero. Greedy decoding can no longer choose it, and sampling redistributes the probability only across the tokens that remain.
+Softmax converts the masked logits into probabilities using $p_v = \exp(\tilde{z}_v) / \sum_u \exp(\tilde{z}_u)$. Since $\exp(-\infty) = 0$, a masked token has a zero numerator and therefore receives probability zero, as long as at least one token remains unmasked. Greedy decoding can no longer choose it, and sampling redistributes the probability only across the tokens that remain.
 
 So the model and the constraint have separate jobs:
 
