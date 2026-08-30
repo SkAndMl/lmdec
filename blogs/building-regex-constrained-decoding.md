@@ -49,7 +49,6 @@ $$
 z_v, & v \in A(s_t) \\
 -\infty, & v \notin A(s_t).
 \end{cases}
-\tag{1}
 $$
 
 Softmax converts a logit `z` into a probability using `exp(z)`. Since `exp(-∞) = 0`, every masked token receives probability zero. Greedy decoding can no longer choose it, and sampling redistributes the probability only across the tokens that remain.
@@ -120,8 +119,7 @@ After the model chooses one token, the decoder starts another full-vocabulary pa
 There are therefore two repeated loops: one over generation steps and one over the vocabulary. If the vocabulary contains `V` tokens, the generated prefix at step `t` has length `L_t`, and the average candidate token contains `K` characters, the rough Python-side work over `T` steps is
 
 $$
-O\!\left(\sum_{t=1}^{T} V(L_t + K)\right).
-\tag{2}
+O\left(\sum_{t=1}^{T} V(L_t + K)\right).
 $$
 
 The decoder does not need the prefix for its wording. It needs the prefix only to answer one question: **which characters are legal next?**
@@ -171,7 +169,6 @@ The transition function above consumes one character at a time. A model token is
 $$
 \delta^*(s, c_1c_2\ldots c_k)
 = \delta(\ldots\delta(\delta(s,c_1),c_2)\ldots,c_k).
-\tag{3}
 $$
 
 `interegular` groups characters that behave identically into the same alphabet symbol. For this pattern, every allowed digit can follow the same transitions, so the FSM does not need a separate path for each digit.
@@ -332,8 +329,6 @@ The three experiments above isolate different parts of the system, so their bars
 
 ![Precomputation removes the Python constraint loop, while KV caching and batching reduce model-side latency.](assets/regex-constrained-decoding/04_benchmark_results.png)
 *Figure 1: Precomputation, KV caching, and batching reduce different costs; only the last two comparisons include model execution. (Plot by author)*
-
-The raw values and individual timing runs are stored in [`benchmark-results.json`](assets/regex-constrained-decoding/benchmark-results.json). The plot is reproducible from [`generate_figures.py`](assets/regex-constrained-decoding/generate_figures.py).
 
 ## Where the token-character bridge still breaks
 
