@@ -5,28 +5,62 @@ DType = Literal["bf16", "fp16", "fp32"]
 
 
 @dataclass(frozen=True)
-class ModelSpec:
+class BaseModelSpec:
     model_id: str
     architecture: str
     model_type: str
 
     hidden_size: int
-    intermediate_size: int
     num_layers: int
     num_attention_heads: int
-    num_kv_heads: int
-    head_dim: int
+
     vocab_size: int
     context_window: int
-    attention_type: Literal["MHA", "GQA", "MQA"]
 
     tie_word_embeddings: bool
+
+
+@dataclass(frozen=True)
+class ModelSpec(BaseModelSpec):
+    intermediate_size: int
+    num_kv_heads: int
+    head_dim: int
+    attention_type: Literal["MHA", "GQA", "MQA", "DSA"]
+
     gated_mlp: bool
 
 
 @dataclass(frozen=True)
+class GLM5Spec(BaseModelSpec):
+    num_dense_layers: int
+
+    head_dim: int
+    intermediate_size: int
+    num_kv_heads: int
+
+    ## indexer spec
+    index_head_dim: int
+    index_n_heads: int
+    index_topk: int
+
+    # mla spec
+    q_lora_rank: int
+    kv_lora_rank: int
+    qk_head_dim: int
+    qk_nope_head_dim: int
+    qk_rope_head_dim: int
+    v_head_dim: int
+
+    ## moe spec
+    num_routed_experts: int
+    num_shared_experts: int
+    num_activated_experts: int
+    moe_intermediate_size: int
+
+
+@dataclass(frozen=True)
 class ModelAnalysis:
-    spec: ModelSpec
+    spec: BaseModelSpec
     total_params: int
     kv_bytes_per_token: int
     context: int
@@ -37,7 +71,8 @@ class ModelAnalysis:
 
 
 class ModelFamily(Protocol):
-    spec: ModelSpec
+    @property
+    def spec(self) -> BaseModelSpec: ...
 
     def estimate_params(self) -> int: ...
 
