@@ -55,6 +55,13 @@ regex_generate(
 ) -> list[str]
 ```
 
+## How it works
+
+For a detailed walkthrough of the implementation—including token masking,
+finite-state machines, precomputed transitions, KV caching, batching, and the
+remaining tokenizer edge cases—read [Regex-Constrained Generation: Making
+Output Syntax a Decoding Rule](blogs/building-regex-constrained-decoding.md).
+
 ## Roadmap
 
 Planned areas of work include:
