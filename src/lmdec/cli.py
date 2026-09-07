@@ -2,6 +2,7 @@ import argparse
 
 from lmdec.analyze import AnalyseArgs, get_analyze_parser
 from lmdec.analyze import run as run_analyze
+from lmdec.model_families.base import Workload
 
 
 def main():
@@ -19,10 +20,12 @@ def main():
             run_analyze(
                 AnalyseArgs(
                     model_id=args.model_id,
-                    context=args.context,
-                    batch_size=args.batch_size,
-                    dtype=args.dtype,
-                    kv_dtype=args.kv_dtype,
+                    workload=Workload(
+                        context=args.context,
+                        batch_size=args.batch_size,
+                        dtype=args.dtype,
+                        kv_dtype=args.kv_dtype,
+                    ),
                     explain=args.explain,
                 )
             )

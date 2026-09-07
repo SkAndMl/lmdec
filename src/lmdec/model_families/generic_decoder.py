@@ -2,11 +2,12 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
-from lmdec.model_families.base import DType, ModelAnalysis, ModelSpec
-from lmdec.model_families.helper import attention_type, dtype_to_byte_count
+from lmdec.model_families.attention import GroupedQueryAttention
+from lmdec.model_families.base import BaseFamily, ModelSpec
+from lmdec.model_families.mlp import DenseMLP
 
 
-class GenericDecoderFamily:
+class GenericDecoderFamily(BaseFamily):
     def __init__(
         self,
         model_id: str,
@@ -48,17 +49,12 @@ class GenericDecoderFamily:
             architecture=architecture,
             model_type=config.model_type,
             hidden_size=hidden_size,
-            intermediate_size=intermediate_size,
             num_layers=_required_attr(
                 config,
                 "num_hidden_layers",
                 "n_layer",
                 "num_layers",
             ),
-            num_attention_heads=num_attention_heads,
-            num_kv_heads=num_kv_heads,
-            head_dim=head_dim,
-            attention_type=attention_type(num_kv_heads, num_attention_heads),
             vocab_size=_required_attr(config, "vocab_size"),
             context_window=_required_attr(
                 config,
@@ -67,65 +63,15 @@ class GenericDecoderFamily:
                 "seq_length",
             ),
             tie_word_embeddings=getattr(config, "tie_word_embeddings", True),
-            gated_mlp=getattr(config, "gated_mlp", False),
-        )
-
-    def calculate_kv_cache_bytes(
-        self,
-        bytes_per_value: int,
-    ) -> int:
-        total_value_per_token = (
-            2 * self.spec.num_layers * self.spec.num_kv_heads * self.spec.head_dim
-        )
-        return bytes_per_value * total_value_per_token
-
-    def estimate_params(self) -> int:
-
-        if self.spec.gated_mlp:
-            ffn_params = 3 * self.spec.hidden_size * self.spec.intermediate_size
-        else:
-            ffn_params = 2 * self.spec.hidden_size * self.spec.intermediate_size
-
-        q_width = self.spec.num_attention_heads * self.spec.head_dim
-        kv_width = self.spec.num_kv_heads * self.spec.head_dim
-
-        qkv_params = (
-            self.spec.hidden_size * q_width + 2 * self.spec.hidden_size * kv_width
-        )
-        output_proj_params = self.spec.hidden_size * self.spec.hidden_size
-
-        embedding_params = self.spec.hidden_size * self.spec.vocab_size
-        language_head_params = 0
-        if not self.spec.tie_word_embeddings:
-            language_head_params = self.spec.vocab_size * self.spec.hidden_size
-
-        total_params = (
-            embedding_params
-            + (qkv_params + output_proj_params + ffn_params) * self.spec.num_layers
-            + language_head_params
-        )
-
-        return total_params
-
-    def analyze(
-        self,
-        context: int,
-        batch_size: int,
-        dtype: DType,
-        kv_dtype: DType,
-        explain: bool,
-    ) -> ModelAnalysis:
-        return ModelAnalysis(
-            spec=self.spec,
-            total_params=self.estimate_params(),
-            kv_bytes_per_token=self.calculate_kv_cache_bytes(
-                bytes_per_value=dtype_to_byte_count(kv_dtype),
+            attention=GroupedQueryAttention(
+                num_attention_heads=num_attention_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
             ),
-            context=context,
-            batch_size=batch_size,
-            dtype=dtype,
-            kv_dtype=kv_dtype,
-            explain=explain,
+            mlp=DenseMLP(
+                intermediate_size=intermediate_size,
+                gated=getattr(config, "gated_mlp", False),
+            ),
         )
 
 

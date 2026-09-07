@@ -1,10 +1,11 @@
 from transformers import Qwen2Config
 
+from lmdec.model_families.base import Workload
 from lmdec.model_families.qwen2 import Qwen2Family
 from lmdec.presentation import render_analysis
 
 
-def test_render_analysis_matches_expected_qwen_report() -> None:
+def _family() -> Qwen2Family:
     config = Qwen2Config(
         architectures=["Qwen2ForCausalLM"],
         vocab_size=151_936,
@@ -16,13 +17,12 @@ def test_render_analysis_matches_expected_qwen_report() -> None:
         max_position_embeddings=32_768,
         tie_word_embeddings=True,
     )
-    family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
-    analysis = family.analyze(
-        context=4_096,
-        batch_size=3,
-        dtype="fp32",
-        kv_dtype="bf16",
-        explain=False,
+    return Qwen2Family("Qwen/Qwen2.5-0.5B", config)
+
+
+def test_render_analysis_matches_expected_qwen_report() -> None:
+    analysis = _family().analyze(
+        Workload(context=4_096, batch_size=3, dtype="fp32", kv_dtype="bf16")
     )
 
     report = render_analysis(analysis)
@@ -59,27 +59,11 @@ Q:KV ratio          7:1"""
 
 
 def test_render_analysis_appends_derivations_when_explain_is_enabled() -> None:
-    config = Qwen2Config(
-        architectures=["Qwen2ForCausalLM"],
-        vocab_size=151_936,
-        hidden_size=896,
-        intermediate_size=4_864,
-        num_hidden_layers=24,
-        num_attention_heads=14,
-        num_key_value_heads=2,
-        max_position_embeddings=32_768,
-        tie_word_embeddings=True,
-    )
-    family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
-    analysis = family.analyze(
-        context=4_096,
-        batch_size=3,
-        dtype="fp32",
-        kv_dtype="bf16",
-        explain=True,
+    analysis = _family().analyze(
+        Workload(context=4_096, batch_size=3, dtype="fp32", kv_dtype="bf16")
     )
 
-    report = render_analysis(analysis)
+    report = render_analysis(analysis, explain=True)
 
     assert report.endswith(
         """DERIVATION
@@ -126,29 +110,17 @@ cache block rounding, and runtime-specific layouts are excluded."""
     )
 
 
+def test_render_analysis_omits_derivations_by_default() -> None:
+    analysis = _family().analyze(Workload(context=4_096, batch_size=3))
+
+    assert "DERIVATION" not in render_analysis(analysis)
+
+
 def test_render_analysis_explains_single_sequence_batch_without_repeating_total(
 ) -> None:
-    config = Qwen2Config(
-        architectures=["Qwen2ForCausalLM"],
-        vocab_size=151_936,
-        hidden_size=896,
-        intermediate_size=4_864,
-        num_hidden_layers=24,
-        num_attention_heads=14,
-        num_key_value_heads=2,
-        max_position_embeddings=32_768,
-        tie_word_embeddings=True,
-    )
-    family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
-    analysis = family.analyze(
-        context=32_768,
-        batch_size=1,
-        dtype="bf16",
-        kv_dtype="bf16",
-        explain=True,
-    )
+    analysis = _family().analyze(Workload(context=32_768, batch_size=1))
 
-    report = render_analysis(analysis)
+    report = render_analysis(analysis, explain=True)
 
     assert "→ 384 MiB/sequence" in report
     assert "Batch size 1 means one sequence occupying the full" in report

@@ -3,6 +3,7 @@ from collections.abc import Callable
 from transformers import PretrainedConfig
 
 from .base import ModelFamily
+from .deepseek_v3 import DeepseekV3Family, DeepseekV32Family
 from .generic_decoder import GenericDecoderFamily
 from .glm5 import GLM5Family
 from .qwen2 import Qwen2Family
@@ -12,6 +13,8 @@ ModelFamilyFactory = Callable[[str, PretrainedConfig], ModelFamily]
 FAMILIES: dict[str, ModelFamilyFactory] = {
     "qwen2": Qwen2Family,
     "glm_moe_dsa": GLM5Family,
+    "deepseek_v3": DeepseekV3Family,
+    "deepseek_v32": DeepseekV32Family,
 }
 
 GENERIC_DECODER: ModelFamilyFactory = GenericDecoderFamily

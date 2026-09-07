@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, GlmMoeDsaConfig
 
-from lmdec.model_families.base import DType
+from lmdec.model_families.base import DType, Workload
 from lmdec.model_families.glm5 import GLM5Family
 from lmdec.model_families.registry import resolve_family
 from lmdec.presentation import render_analysis
@@ -54,7 +54,7 @@ def test_glm5_parameter_estimate_matches_model_shapes(
         if "norm" not in name and "bias" not in name
     )
 
-    assert family.estimate_params() == expected
+    assert family.spec.parameter_breakdown().total == expected
     if not tied:
         assert expected == 743_910_014_976
 
@@ -79,13 +79,13 @@ def test_glm5_registry_analysis_and_rendering(
     assert isinstance(family, GLM5Family)
 
     analysis = family.analyze(
-        context=4_096, batch_size=2, dtype="bf16", kv_dtype=kv_dtype, explain=explain
+        Workload(context=4_096, batch_size=2, dtype="bf16", kv_dtype=kv_dtype)
     )
-    report = render_analysis(analysis)
+    report = render_analysis(analysis, explain=explain)
 
     assert analysis.spec is family.spec
-    assert analysis.total_params == 743_910_014_976
-    assert analysis.kv_bytes_per_token == expected_bytes
+    assert analysis.params.total == 743_910_014_976
+    assert analysis.memory.kv_bytes_per_token == expected_bytes
     assert "~743.91B" in report
     assert "Q/K head dimension  256" in report
     assert "V head dimension    256" in report
@@ -117,26 +117,54 @@ def test_glm5_compressed_cache_does_not_store_queries_or_expanded_heads(
     config: GlmMoeDsaConfig,
 ) -> None:
     family = GLM5Family("zai-org/GLM-5", config)
-    family.spec = replace(
-        family.spec,
+    attention = family.spec.attention
+
+    narrowed = replace(
+        attention,
         num_attention_heads=32,
-        num_kv_heads=32,
-        index_n_heads=16,
-        index_topk=1_024,
         q_lora_rank=1_024,
         v_head_dim=128,
+        indexer=replace(attention.indexer, num_heads=16, top_k=1_024),
     )
+    family.spec = replace(family.spec, attention=narrowed)
 
-    assert family.calculate_kv_cache_bytes(bytes_per_value=2) == 109_824
+    assert family.spec.kv_bytes_per_token(DType.BF16) == 109_824
 
 
 def test_glm5_cache_scales_with_layers_and_stored_dimensions(
     config: GlmMoeDsaConfig,
 ) -> None:
     family = GLM5Family("zai-org/GLM-5", config)
+    attention = family.spec.attention
+
     # Two layers, each storing 16 latent + 8 RoPE + 8 indexer values.
     family.spec = replace(
-        family.spec, num_layers=2, kv_lora_rank=16, qk_rope_head_dim=8, index_head_dim=8
+        family.spec,
+        num_layers=2,
+        attention=replace(
+            attention,
+            kv_lora_rank=16,
+            qk_rope_head_dim=8,
+            indexer=replace(attention.indexer, head_dim=8),
+        ),
     )
 
-    assert family.calculate_kv_cache_bytes(bytes_per_value=4) == 256
+    assert family.spec.kv_bytes_per_token(DType.FP32) == 256
+
+
+def test_mla_without_indexer_drops_indexer_cache_and_rows(
+    config: GlmMoeDsaConfig,
+) -> None:
+    family = GLM5Family("zai-org/GLM-5", config)
+    family.spec = replace(
+        family.spec, attention=replace(family.spec.attention, indexer=None)
+    )
+
+    analysis = family.analyze(Workload(context=4_096))
+    report = render_analysis(analysis, explain=True)
+
+    assert analysis.memory.kv_bytes_per_token == 78 * (512 + 64) * 2
+    assert "Compressed MLA" in report
+    assert "indexer" not in report
+    assert "DSA" not in report
+    assert "78 layers × (512 KV latent + 64 RoPE key) × 2 bytes (BF16)" in report

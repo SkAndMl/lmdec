@@ -18,4 +18,6 @@ def test_qwen2_family_calculates_head_dimension_when_not_explicit() -> None:
 
     family = Qwen2Family("Qwen/Qwen2.5-0.5B", config)
 
-    assert family.spec.head_dim == 64
+    assert family.spec.attention.head_dim == 64
+    assert family.spec.attention.attention_type == "GQA"
+    assert family.spec.mlp.gated is True
