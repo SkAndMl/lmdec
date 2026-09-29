@@ -142,7 +142,11 @@ class Qwen2Attention(nn.Module):
             attention_mask = attention_mask | mask
         attn_scores.masked_fill_(attention_mask, value=float("-inf"))
 
-        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = F.softmax(
+            attn_scores,
+            dim=-1,
+            dtype=torch.float32,
+        ).to(q.dtype)
         out = (
             (attn_weights @ v)
             .transpose(1, 2)
@@ -235,6 +239,38 @@ class Qwen2ForCausalLM(nn.Module):
         return x
 
     @staticmethod
+    @torch.inference_mode()
+    def check(cfg: ModelConfig):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(cfg.model_id)
+
+        hf = AutoModelForCausalLM.from_pretrained(
+            cfg.model_id,
+            attn_implementation="eager",
+        )
+        ours = Qwen2ForCausalLM.from_pretrained(cfg)
+
+        hf.eval()
+        ours.eval()
+
+        input_ids = tokenizer(
+            "The capital of France is",
+            return_tensors="pt",
+        ).input_ids
+
+        hf_logits = hf(input_ids).logits
+        our_logits = ours(input_ids)
+
+        print("max diff:", (hf_logits - our_logits).abs().max())
+        print(
+            "HF:",
+            hf_logits[:, -1].argmax(-1),
+            "ours:",
+            our_logits[:, -1].argmax(-1),
+        )
+
+    @staticmethod
     def from_pretrained(cfg: ModelConfig) -> "Qwen2ForCausalLM":
         from transformers import AutoModelForCausalLM
 
@@ -255,6 +291,9 @@ if __name__ == "__main__":
 
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_id)
     cfg = ModelConfig()
+
+    Qwen2ForCausalLM.check(cfg)
+
     model = Qwen2ForCausalLM.from_pretrained(cfg)
 
     text = "Hello"
