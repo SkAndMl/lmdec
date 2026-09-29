@@ -45,14 +45,12 @@ class Qwen2RotaryEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]:
         # position_ids: [B, T]
-        inv_freq = (
-            self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        )
+        inv_freq = self.inv_freq[None, None, :].float()
         device_type = x.device.type if x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq @ position_ids[:, None, :].float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos, sin = emb.cos(), emb.sin()
+            angles = position_ids[..., None].float() * inv_freq
+            angles = torch.cat((angles, angles), dim=-1)
+            cos, sin = angles.cos(), angles.sin()
 
         return cos.to(x.dtype), sin.to(x.dtype)
 
@@ -110,30 +108,43 @@ class Qwen2Attention(nn.Module):
         )
 
     def forward(
-        self, x: Tensor, mask: Tensor | None = None, position_embeddings=None
-    ) -> Tensor:
+        self,
+        x: Tensor,
+        mask: Tensor | None = None,
+        position_embeddings: Tensor | None = None,
+        prev_k: Tensor | None = None,
+        prev_v: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
         b, t, _ = x.shape
 
         q: Tensor = (
             self.q_proj(x).view(b, t, self.attn_heads, self.head_dim).transpose(1, 2)
         )  # b, q_h, t, head_dim
-        k: Tensor = (
+        curr_k: Tensor = (
             self.k_proj(x).view(b, t, self.kv_heads, self.head_dim).transpose(1, 2)
         )  # b, kv_h, t, head_dim
-        v: Tensor = (
+        curr_v: Tensor = (
             self.v_proj(x).view(b, t, self.kv_heads, self.head_dim).transpose(1, 2)
         )  # b, kv_h, t, head_dim
 
         cos, sin = position_embeddings
-        q, k = apply_rope(q, k, cos, sin)
+        q, curr_k = apply_rope(q, curr_k, cos, sin)
+
+        k, v = curr_k, curr_v
+        if prev_k is not None:
+            if prev_v is None:
+                raise RuntimeError()
+
+            k = torch.cat((prev_k, curr_k), dim=2).to(prev_k.device)
+            v = torch.cat((prev_v, curr_v), dim=2).to(prev_v.device)
 
         kv_repeats = self.attn_heads // self.kv_heads
 
-        k = k.repeat_interleave(kv_repeats, dim=1)
-        v = v.repeat_interleave(kv_repeats, dim=1)
+        attn_k = k.repeat_interleave(kv_repeats, dim=1)
+        attn_v = v.repeat_interleave(kv_repeats, dim=1)
 
         attn_scores: Tensor = (
-            q @ k.transpose(2, 3) / (self.head_dim**0.5)
+            q @ attn_k.transpose(2, 3) / (self.head_dim**0.5)
         )  # b, q_h, t, t
         attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
         if mask is not None:
@@ -148,13 +159,13 @@ class Qwen2Attention(nn.Module):
             dtype=torch.float32,
         ).to(q.dtype)
         out = (
-            (attn_weights @ v)
+            (attn_weights @ attn_v)
             .transpose(1, 2)
             .contiguous()
             .view(b, t, self.head_dim * self.attn_heads)
         )
 
-        return self.o_proj(out)
+        return self.o_proj(out), k, v
 
 
 class Qwen2MLP(nn.Module):
@@ -180,14 +191,24 @@ class Qwen2DecoderLayer(nn.Module):
         self.post_attention_layernorm = Qwen2RMSNorm(cfg)
 
     def forward(
-        self, x: Tensor, mask: Tensor | None = None, position_embeddings=None
-    ) -> Tensor:
-        x = x + self.self_attn(
-            self.input_layernorm(x), mask, position_embeddings=position_embeddings
+        self,
+        x: Tensor,
+        mask: Tensor | None = None,
+        position_embeddings: Tensor | None = None,
+        prev_k: Tensor | None = None,
+        prev_v: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        attn_out, k, v = self.self_attn(
+            self.input_layernorm(x),
+            mask,
+            position_embeddings=position_embeddings,
+            prev_k=prev_k,
+            prev_v=prev_v,
         )
+        x = x + attn_out
         x = x + self.mlp(self.post_attention_layernorm(x))
 
-        return x
+        return x, k, v
 
 
 class Qwen2Model(nn.Module):
@@ -201,16 +222,39 @@ class Qwen2Model(nn.Module):
         self.norm = Qwen2RMSNorm(cfg)
         self.rotary_emb = Qwen2RotaryEmbedding(cfg)
 
-    def forward(self, input_ids: Tensor, mask: Tensor | None = None) -> Tensor:
-        x = self.embed_tokens(input_ids)
-        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[
-            None, :
-        ]
-        position_embeddings = self.rotary_emb(x, position_ids)
-        for layer in self.layers:
-            x = layer(x, mask, position_embeddings=position_embeddings)
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor | None = None,
+        mask: Tensor | None = None,
+        kv_cache: dict[int, dict[str, Tensor]] | None = None,
+    ) -> tuple[Tensor, dict[int, dict[str, Tensor]]]:
 
-        return self.norm(x)
+        if position_ids is None:
+            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[
+                None, :
+            ]
+
+        x = self.embed_tokens(input_ids)
+        position_embeddings = self.rotary_emb(x, position_ids)
+
+        cache = {}
+
+        for i, layer in enumerate(self.layers):
+            prev_k, prev_v = None, None
+            if kv_cache is not None:
+                prev_k, prev_v = kv_cache[i]["k"], kv_cache[i]["v"]
+
+            x, k, v = layer(
+                x,
+                mask,
+                position_embeddings=position_embeddings,
+                prev_k=prev_k,
+                prev_v=prev_v,
+            )
+            cache[i] = {"k": k, "v": v}
+
+        return self.norm(x), cache
 
 
 class Qwen2ForCausalLM(nn.Module):
@@ -223,27 +267,83 @@ class Qwen2ForCausalLM(nn.Module):
         if cfg.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
 
-    def forward(self, input_ids: Tensor, mask: Tensor | None = None) -> Tensor:
-        x = self.model(input_ids, mask)
-        return self.lm_head(x)
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor | None = None,
+        mask: Tensor | None = None,
+        kv_cache: dict[int, dict[str, Tensor]] | None = None,
+    ) -> tuple[Tensor, dict[int, dict[str, Tensor]]]:
+        x, cache = self.model(
+            input_ids,
+            position_ids=position_ids,
+            mask=mask,
+            kv_cache=kv_cache,
+        )
+        return self.lm_head(x), cache
 
+    def _prefill(
+        self,
+        x: Tensor,
+        position_ids: Tensor | None = None,
+    ):
+        logits, cache = self(
+            input_ids=x,
+            position_ids=position_ids,
+            mask=None,
+            kv_cache=None,
+        )
+
+        return logits, cache
+
+    @torch.inference_mode()
     def generate(self, input_ids: Tensor, max_tokens: int = 20) -> Tensor:
+
+        if max_tokens == 0:
+            return input_ids
+
         assert len(input_ids) == 1
         x = input_ids.clone()
+        position_ids = torch.arange(
+            x.shape[-1], dtype=torch.long, device=x.device
+        ).unsqueeze(0)
 
-        for _ in range(max_tokens):
-            logits: Tensor = self(x)
+        logits, cache = self._prefill(x, position_ids)
+
+        next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        x = torch.cat([x, next_token_id], dim=-1).to(x.device)
+        position_ids = torch.tensor(
+            [[x.shape[-1] - 1]],
+            dtype=torch.long,
+            device=x.device,
+        )
+
+        for _ in range(max_tokens - 1):
+            logits, cache = self(
+                input_ids=x[:, -1:],
+                position_ids=position_ids,
+                mask=None,
+                kv_cache=cache,
+            )
+
             next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            x = torch.cat([x, next_token_id], dim=-1)
+            x = torch.cat([x, next_token_id], dim=-1).to(x.device)
+            position_ids = torch.tensor(
+                [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
+            )
 
         return x
 
     @staticmethod
     @torch.inference_mode()
     def check(cfg: ModelConfig):
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            PreTrainedTokenizerBase,
+        )
 
-        tokenizer = AutoTokenizer.from_pretrained(cfg.model_id)
+        tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(cfg.model_id)
 
         hf = AutoModelForCausalLM.from_pretrained(
             cfg.model_id,
@@ -254,13 +354,13 @@ class Qwen2ForCausalLM(nn.Module):
         hf.eval()
         ours.eval()
 
-        input_ids = tokenizer(
+        input_ids: Tensor = tokenizer(
             "The capital of France is",
             return_tensors="pt",
         ).input_ids
 
-        hf_logits = hf(input_ids).logits
-        our_logits = ours(input_ids)
+        hf_logits: Tensor = hf(input_ids).logits
+        our_logits, _ = ours(input_ids)
 
         print("max diff:", (hf_logits - our_logits).abs().max())
         print(
@@ -285,9 +385,12 @@ class Qwen2ForCausalLM(nn.Module):
 
 
 if __name__ == "__main__":
+    import time
+
     from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
     model_id = "Qwen/Qwen2.5-0.5B"
+    num_tokens = 20
 
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_id)
     cfg = ModelConfig()
@@ -300,7 +403,14 @@ if __name__ == "__main__":
     tokens = tokenizer.encode(text)
     input_ids = torch.tensor([tokens], dtype=torch.long)
 
-    generation = model.generate(input_ids, 20)
+    start = time.perf_counter()
+
+    generation = model.generate(input_ids, num_tokens)
+
+    total = time.perf_counter() - start
 
     output_text = tokenizer.decode(generation[0].tolist())
     print(f"Generated: {output_text}")
+
+    print(f"time: {total:.4f}")
+    print(f"tokens/sec: {num_tokens / total:.4f}")
