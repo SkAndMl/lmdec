@@ -3,6 +3,9 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.profiler import ProfilerActivity, profile
+
+from lmdec.chat.kernels.rmsnorm import rmsnorm
 
 
 @dataclass
@@ -85,6 +88,14 @@ class Qwen2RMSNorm(nn.Module):
         self.eps = cfg.rms_norm_eps
 
     def forward(self, x: Tensor) -> Tensor:
+
+        if x.is_cuda and x.dtype == torch.float16 and x.is_contiguous():
+            return rmsnorm(
+                x,
+                self.weight,
+                self.eps,
+            )
+
         dtype = x.dtype
         x = x.float()
         x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
@@ -121,7 +132,7 @@ class Qwen2Attention(nn.Module):
         x: Tensor,
         mask: Tensor | None = None,
         position_embeddings: Tensor | None = None,
-        lengths: torch.Tensor | None = None,  # b,
+        cache_pos: int | None = None,  # b,
         kv_cache: KVCache | None = None,
     ) -> Tensor:
         b, t, _ = x.shape
@@ -141,17 +152,17 @@ class Qwen2Attention(nn.Module):
 
         k, v = curr_k, curr_v
         if kv_cache is not None:
-            if lengths is None:
-                raise RuntimeError("kv_cache is not None but lengths is")
+            if cache_pos is None:
+                raise RuntimeError("kv_cache is not None but cache_pos is")
 
             if kv_cache.prefill:
-                kv_cache.k[:, :, :lengths, :] = k
-                kv_cache.v[:, :, :lengths, :] = v
+                kv_cache.k[:, :, :cache_pos, :] = k
+                kv_cache.v[:, :, :cache_pos, :] = v
             else:
-                kv_cache.k[:, :, lengths - 1 : lengths, :] = k
-                kv_cache.v[:, :, lengths - 1 : lengths, :] = v
+                kv_cache.k[:, :, cache_pos - 1 : cache_pos, :] = k
+                kv_cache.v[:, :, cache_pos - 1 : cache_pos, :] = v
 
-            k, v = kv_cache.k[:, :, :lengths, :], kv_cache.v[:, :, :lengths, :]
+            k, v = kv_cache.k[:, :, :cache_pos, :], kv_cache.v[:, :, :cache_pos, :]
 
         kv_repeats = self.attn_heads // self.kv_heads
 
@@ -212,14 +223,14 @@ class Qwen2DecoderLayer(nn.Module):
         mask: Tensor | None = None,
         position_embeddings: Tensor | None = None,
         kv_cache: KVCache | None = None,
-        lengths: torch.Tensor | None = None,
+        cache_pos: int | None = None,
     ) -> Tensor:
         attn_out = self.self_attn(
             x=self.input_layernorm(x),
             mask=mask,
             position_embeddings=position_embeddings,
             kv_cache=kv_cache,
-            lengths=lengths,
+            cache_pos=cache_pos,
         )
         x = x + attn_out
         x = x + self.mlp(self.post_attention_layernorm(x))
@@ -245,13 +256,11 @@ class Qwen2Model(nn.Module):
         position_ids: Tensor | None = None,
         mask: Tensor | None = None,
         kv_cache: dict[int, KVCache] | None = None,
-        lengths: torch.Tensor | None = None,
+        cache_pos: int | None = None,
     ) -> Tensor:
 
         if position_ids is None:
-            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[
-                None, :
-            ]
+            position_ids = torch.arange(input_ids.shape[1], device=torch.long)[None, :]
 
         x = self.embed_tokens(input_ids)
         position_embeddings = self.rotary_emb(x, position_ids)
@@ -265,7 +274,7 @@ class Qwen2Model(nn.Module):
                 mask=mask,
                 position_embeddings=position_embeddings,
                 kv_cache=layer_kv_cache,
-                lengths=lengths,
+                cache_pos=cache_pos,
             )
 
         return self.norm(x)
@@ -293,14 +302,14 @@ class Qwen2ForCausalLM(nn.Module):
         position_ids: Tensor | None = None,
         mask: Tensor | None = None,
         kv_cache: dict[int, KVCache] | None = None,
-        lengths: torch.Tensor | None = None,
+        cache_pos: int | None = None,
     ) -> Tensor:
         x = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             mask=mask,
             kv_cache=kv_cache,
-            lengths=lengths,
+            cache_pos=cache_pos,
         )
         return self.lm_head(x)
 
@@ -308,7 +317,7 @@ class Qwen2ForCausalLM(nn.Module):
         self,
         x: Tensor,
         position_ids: Tensor | None = None,
-        lengths: Tensor | None = None,
+        cache_pos: int | None = None,
     ) -> tuple[Tensor, dict[int, KVCache]]:
 
         b, t = x.shape
@@ -341,7 +350,7 @@ class Qwen2ForCausalLM(nn.Module):
             position_ids=position_ids,
             mask=None,
             kv_cache=kv_cache,
-            lengths=lengths,
+            cache_pos=cache_pos,
         )
 
         for layer in range(self.cfg.num_layers):
@@ -361,12 +370,12 @@ class Qwen2ForCausalLM(nn.Module):
             x.shape[-1], dtype=torch.long, device=x.device
         ).unsqueeze(0)
 
-        lengths = torch.tensor((x.shape[-1],), device=x.device, dtype=torch.long)
+        cache_pos = x.shape[-1]
 
         logits, kv_cache = self._prefill(
             x,
             position_ids,
-            lengths=lengths,
+            cache_pos=cache_pos,
         )
 
         next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
@@ -376,7 +385,7 @@ class Qwen2ForCausalLM(nn.Module):
             dtype=torch.long,
             device=x.device,
         )
-        lengths += 1
+        cache_pos += 1
 
         for _ in range(max_tokens - 1):
             logits = self(
@@ -384,7 +393,7 @@ class Qwen2ForCausalLM(nn.Module):
                 position_ids=position_ids,
                 mask=None,
                 kv_cache=kv_cache,
-                lengths=lengths,
+                cache_pos=cache_pos,
             )
 
             next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
@@ -392,7 +401,7 @@ class Qwen2ForCausalLM(nn.Module):
             position_ids = torch.tensor(
                 [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
             )
-            lengths += 1
+            cache_pos += 1
 
         return x
 
@@ -447,32 +456,49 @@ class Qwen2ForCausalLM(nn.Module):
 
 
 if __name__ == "__main__":
-    import time
-
     from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
     model_id = "Qwen/Qwen2.5-0.5B"
-    num_tokens = 20
+    num_tokens = 128
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device: {device}")
+
+    dtype = torch.float16
+    if device == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False):
+        dtype = torch.bfloat16
+
+    print(f"dtype: {dtype}")
 
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_id)
-    cfg = ModelConfig(dtype=torch.float32)
-
-    # Qwen2ForCausalLM.check(cfg)
+    cfg = ModelConfig(dtype=dtype)
 
     model = Qwen2ForCausalLM.from_pretrained(cfg)
+    model.to(device)
 
-    text = "Hello"
+    text = "The world is a"
     tokens = tokenizer.encode(text)
-    input_ids = torch.tensor([tokens], dtype=torch.long)
+    input_ids = torch.tensor([tokens], dtype=torch.long).to(device)
 
-    start = time.perf_counter()
+    _ = model.generate(input_ids, num_tokens)
+    torch.cuda.synchronize()
 
-    generation = model.generate(input_ids, num_tokens)
+    print("warmup done")
 
-    total = time.perf_counter() - start
+    with profile(
+        activities=[
+            ProfilerActivity.CPU,
+            ProfilerActivity.CUDA,
+        ],
+        record_shapes=True,
+    ) as prof:
+        _ = model.generate(input_ids, num_tokens)
 
-    output_text = tokenizer.decode(generation[0].tolist())
-    print(f"Generated: {output_text}")
+    torch.cuda.synchronize()
 
-    print(f"time: {total:.4f}")
-    print(f"tokens/sec: {num_tokens / total:.4f}")
+    print(
+        prof.key_averages().table(
+            sort_by="cuda_time_total",
+            row_limit=30,
+        )
+    )
