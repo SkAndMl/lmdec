@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from torch.profiler import ProfilerActivity, profile
 
 from lmdec.chat.kernels.rmsnorm import rmsnorm
+from lmdec.chat.kernels.swiglu import swiglu
 
 
 @dataclass
@@ -204,6 +205,17 @@ class Qwen2MLP(nn.Module):
         self.act_fn = F.silu
 
     def forward(self, x: Tensor) -> Tensor:
+
+        if (
+            self.act_fn.__name__ == "silu"
+            and x.is_cuda
+            and x.dtype == torch.float16
+            and x.is_contiguous()
+        ):
+            gate = self.gate_proj(x)
+            up = self.up_proj(x)
+            return self.down_proj(swiglu(gate, up))
+
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
 
