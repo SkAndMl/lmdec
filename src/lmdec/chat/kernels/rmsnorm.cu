@@ -21,12 +21,14 @@ __global__ void rmsnorm_kernel(
 
     float local_sum = 0.0f;
 
-    for (int i=tid; i<hidden_size; i+=blockDim.x) {
-        float v = __half2float(x[row_offset+i]);
+    // each thread calculates a partial sum
+    for (int i = tid; i < hidden_size; i += blockDim.x) {
+        float v = __half2float(x[row_offset + i]); 
         local_sum += v * v;
     }
 
-    for (int offset=16; offset > 0; offset /= 2) {
+    // warp-reduction
+    for (int offset = 16; offset > 0; offset /= 2) {
         local_sum += __shfl_down_sync(
             0xffffffff,
             local_sum,
@@ -37,18 +39,19 @@ __global__ void rmsnorm_kernel(
     const int lane = tid % 32;
     const int warp_id = tid / 32;
 
+    // store warp sums in shared memory
     __shared__ float warp_sums[8];
 
     if (lane == 0) {
         warp_sums[warp_id] = local_sum;
     }
-
+    // wait for all the threads to put the sum
     __syncthreads();
 
     if (warp_id == 0) {
         float value = lane < 8 ? warp_sums[lane] : 0.0f;
 
-        for (int offset=16; offset > 0; offset /= 2) {
+        for (int offset = 16; offset > 0; offset /= 2) {
             value += __shfl_down_sync(
                 0xffffffff,
                 value,
@@ -59,7 +62,7 @@ __global__ void rmsnorm_kernel(
         if (lane == 0) {
             warp_sums[0] = value;
         }
-    } 
+    }
 
     __syncthreads();
 
@@ -86,6 +89,11 @@ torch::Tensor rmsnorm_forward(
     );
 
     TORCH_CHECK(
+        weight.is_cuda(),
+        "weight must be CUDA"
+    );
+
+    TORCH_CHECK(
         x.scalar_type() == torch::kFloat16,
         "x must be float16"
     );
@@ -109,7 +117,7 @@ torch::Tensor rmsnorm_forward(
 
     TORCH_CHECK(
         weight.numel() == hidden_size,
-        "weight size must equal hidden size"
+        "weight size must be equal to hidden size"
     );
 
     const int rows = x.numel() / hidden_size;
