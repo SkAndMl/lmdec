@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 import torch
@@ -90,7 +91,18 @@ class Qwen2RMSNorm(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
 
-        if x.is_cuda and x.dtype == torch.float16 and x.is_contiguous():
+        use_custom_rmsnorm = os.environ.get("USE_CUSTOM_RMSNORM", "false").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        if (
+            use_custom_rmsnorm
+            and x.is_cuda
+            and x.dtype == torch.float16
+            and x.is_contiguous()
+        ):
             return rmsnorm(
                 x,
                 self.weight,
@@ -173,12 +185,23 @@ class Qwen2Attention(nn.Module):
         attn_scores: Tensor = (
             q @ attn_k.transpose(2, 3) / (self.head_dim**0.5)
         )  # b, q_h, t, t
-        attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
-        if mask is not None:
-            if mask.ndim == 3:
-                mask = mask.unsqueeze(1)
-            attention_mask = attention_mask | mask
-        attn_scores.masked_fill_(attention_mask, value=float("-inf"))
+
+        if kv_cache is not None and kv_cache.prefill:
+            attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
+            if mask is not None:
+                if mask.ndim == 3:
+                    mask = mask.unsqueeze(1)
+
+                attention_mask = attention_mask | mask
+
+            attn_scores.masked_fill_(attention_mask, value=float("-inf"))
+
+        # attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
+        # if mask is not None:
+        #     if mask.ndim == 3:
+        #         mask = mask.unsqueeze(1)
+        #     attention_mask = attention_mask | mask
+        # attn_scores.masked_fill_(attention_mask, value=float("-inf"))
 
         attn_weights = F.softmax(
             attn_scores,
@@ -206,8 +229,15 @@ class Qwen2MLP(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
 
+        use_custom_silu = os.environ.get("USE_CUSTOM_SILU", "false").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
         if (
-            self.act_fn.__name__ == "silu"
+            use_custom_silu
+            and self.act_fn.__name__ == "silu"
             and x.is_cuda
             and x.dtype == torch.float16
             and x.is_contiguous()
@@ -472,6 +502,8 @@ if __name__ == "__main__":
 
     model_id = "Qwen/Qwen2.5-0.5B"
     num_tokens = 128
+    warmup_steps = 10
+    actual_generation = 5
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}")
@@ -492,25 +524,25 @@ if __name__ == "__main__":
     tokens = tokenizer.encode(text)
     input_ids = torch.tensor([tokens], dtype=torch.long).to(device)
 
-    _ = model.generate(input_ids, num_tokens)
-    torch.cuda.synchronize()
-
-    print("warmup done")
-
-    with profile(
-        activities=[
-            ProfilerActivity.CPU,
-            ProfilerActivity.CUDA,
-        ],
-        record_shapes=True,
-    ) as prof:
+    for _ in range(warmup_steps):
         _ = model.generate(input_ids, num_tokens)
 
     torch.cuda.synchronize()
 
-    print(
-        prof.key_averages().table(
-            sort_by="cuda_time_total",
-            row_limit=30,
-        )
-    )
+    print("warmup done")
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
+    torch.cuda.synchronize()
+
+    start.record()
+    for _ in range(actual_generation):
+        _ = model.generate(input_ids, num_tokens)
+    end.record()
+
+    torch.cuda.synchronize()
+
+    total = start.elapsed_time(end)
+
+    print(f"time taken: {total / 1000 / actual_generation:.4f} seconds")
