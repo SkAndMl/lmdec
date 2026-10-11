@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
-from torch.profiler import ProfilerActivity, profile
+from torch.profiler import ProfilerActivity, profile, record_function
 
 from lmdec.chat.kernels.rmsnorm import rmsnorm
 from lmdec.chat.kernels.swiglu import swiglu
@@ -68,7 +68,7 @@ class Qwen2RotaryEmbedding(nn.Module):
         return cos.to(x.dtype), sin.to(x.dtype)
 
 
-def apply_rope(q, k, cos, sin):
+def apply_rope(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor) -> tuple[Tensor, Tensor]:
     # q: [B, H, T, D]
     # k: [B, KV_H, T, D]
     # cos/sin: [B, T, D]
@@ -126,15 +126,12 @@ class Qwen2Attention(nn.Module):
         self.kv_heads = cfg.num_key_value_heads
         self.head_dim = cfg.model_dim // self.attn_heads
 
-        self.q_proj = nn.Linear(
-            cfg.model_dim, self.head_dim * self.attn_heads, bias=cfg.attn_bias
+        self.qkv_proj = nn.Linear(
+            cfg.model_dim,
+            self.head_dim * (self.attn_heads + 2 * self.kv_heads),
+            bias=cfg.attn_bias,
         )
-        self.k_proj = nn.Linear(
-            cfg.model_dim, self.head_dim * self.kv_heads, bias=cfg.attn_bias
-        )
-        self.v_proj = nn.Linear(
-            cfg.model_dim, self.head_dim * self.kv_heads, bias=cfg.attn_bias
-        )
+
         self.o_proj = nn.Linear(
             self.head_dim * self.attn_heads, cfg.model_dim, bias=False
         )
@@ -150,14 +147,24 @@ class Qwen2Attention(nn.Module):
     ) -> Tensor:
         b, t, _ = x.shape
 
-        q: Tensor = (
-            self.q_proj(x).view(b, t, self.attn_heads, self.head_dim).transpose(1, 2)
+        qkv: Tensor = self.qkv_proj(x)  # b, t, head_dim * (q_h + 2*kv_h)
+        q, curr_k, curr_v = qkv.split(
+            split_size=[
+                self.head_dim * self.attn_heads,
+                self.head_dim * self.kv_heads,
+                self.head_dim * self.kv_heads,
+            ],
+            dim=2,
+        )
+
+        q = q.view(b, t, self.attn_heads, self.head_dim).transpose(
+            1, 2
         )  # b, q_h, t, head_dim
-        curr_k: Tensor = (
-            self.k_proj(x).view(b, t, self.kv_heads, self.head_dim).transpose(1, 2)
+        curr_k = curr_k.view(b, t, self.kv_heads, self.head_dim).transpose(
+            1, 2
         )  # b, kv_h, t, head_dim
-        curr_v: Tensor = (
-            self.v_proj(x).view(b, t, self.kv_heads, self.head_dim).transpose(1, 2)
+        curr_v = curr_v.view(b, t, self.kv_heads, self.head_dim).transpose(
+            1, 2
         )  # b, kv_h, t, head_dim
 
         cos, sin = position_embeddings
@@ -195,13 +202,6 @@ class Qwen2Attention(nn.Module):
                 attention_mask = attention_mask | mask
 
             attn_scores.masked_fill_(attention_mask, value=float("-inf"))
-
-        # attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
-        # if mask is not None:
-        #     if mask.ndim == 3:
-        #         mask = mask.unsqueeze(1)
-        #     attention_mask = attention_mask | mask
-        # attn_scores.masked_fill_(attention_mask, value=float("-inf"))
 
         attn_weights = F.softmax(
             attn_scores,
@@ -267,15 +267,18 @@ class Qwen2DecoderLayer(nn.Module):
         kv_cache: KVCache | None = None,
         cache_pos: int | None = None,
     ) -> Tensor:
-        attn_out = self.self_attn(
-            x=self.input_layernorm(x),
-            mask=mask,
-            position_embeddings=position_embeddings,
-            kv_cache=kv_cache,
-            cache_pos=cache_pos,
-        )
+        with record_function("qwen::attn"):
+            attn_out = self.self_attn(
+                x=self.input_layernorm(x),
+                mask=mask,
+                position_embeddings=position_embeddings,
+                kv_cache=kv_cache,
+                cache_pos=cache_pos,
+            )
         x = x + attn_out
-        x = x + self.mlp(self.post_attention_layernorm(x))
+
+        with record_function("qwen::mlp"):
+            x = x + self.mlp(self.post_attention_layernorm(x))
 
         return x
 
@@ -414,11 +417,12 @@ class Qwen2ForCausalLM(nn.Module):
 
         cache_pos = x.shape[-1]
 
-        logits, kv_cache = self._prefill(
-            x,
-            position_ids,
-            cache_pos=cache_pos,
-        )
+        with record_function("qwen::prefill"):
+            logits, kv_cache = self._prefill(
+                x,
+                position_ids,
+                cache_pos=cache_pos,
+            )
 
         next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         x = torch.cat([x, next_token_id], dim=-1).to(x.device)
@@ -429,21 +433,22 @@ class Qwen2ForCausalLM(nn.Module):
         )
         cache_pos += 1
 
-        for _ in range(max_tokens - 1):
-            logits = self(
-                input_ids=x[:, -1:],
-                position_ids=position_ids,
-                mask=None,
-                kv_cache=kv_cache,
-                cache_pos=cache_pos,
-            )
+        with record_function("qwen::decode"):
+            for _ in range(max_tokens - 1):
+                logits = self(
+                    input_ids=x[:, -1:],
+                    position_ids=position_ids,
+                    mask=None,
+                    kv_cache=kv_cache,
+                    cache_pos=cache_pos,
+                )
 
-            next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            x = torch.cat([x, next_token_id], dim=-1).to(x.device)
-            position_ids = torch.tensor(
-                [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
-            )
-            cache_pos += 1
+                next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+                x = torch.cat([x, next_token_id], dim=-1).to(x.device)
+                position_ids = torch.tensor(
+                    [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
+                )
+                cache_pos += 1
 
         return x
 
@@ -488,11 +493,30 @@ class Qwen2ForCausalLM(nn.Module):
         from transformers import AutoModelForCausalLM
 
         model = Qwen2ForCausalLM(cfg)
-        hf_model_state_dict = AutoModelForCausalLM.from_pretrained(
-            cfg.model_id
-        ).state_dict()
+        state_dict = AutoModelForCausalLM.from_pretrained(cfg.model_id).state_dict()
 
-        model.load_state_dict(hf_model_state_dict)
+        for i in range(cfg.num_layers):
+            prefix = f"model.layers.{i}.self_attn."
+            wt_keys = [f"{prefix}{x}_proj.weight" for x in ["q", "k", "v"]]
+            state_dict[f"model.layers.{i}.self_attn.qkv_proj.weight"] = torch.cat(
+                [state_dict[wt_key] for wt_key in wt_keys],
+                dim=0,
+            )
+
+            for wt_key in wt_keys:
+                state_dict.pop(wt_key)
+
+            if cfg.attn_bias:
+                bias_keys = [f"{prefix}{x}_proj.bias" for x in ["q", "k", "v"]]
+                state_dict[f"model.layers.{i}.self_attn.qkv_proj.bias"] = torch.cat(
+                    [state_dict[bias_key] for bias_key in bias_keys],
+                    dim=0,
+                )
+
+                for bias_key in bias_keys:
+                    state_dict.pop(bias_key)
+
+        model.load_state_dict(state_dict)
 
         return model
 
@@ -502,7 +526,7 @@ if __name__ == "__main__":
 
     model_id = "Qwen/Qwen2.5-0.5B"
     num_tokens = 128
-    warmup_steps = 10
+    warmup_steps = int(os.environ.get("WARMUP_STEPS", "2"))
     actual_generation = 5
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -538,11 +562,33 @@ if __name__ == "__main__":
 
     start.record()
     for _ in range(actual_generation):
-        _ = model.generate(input_ids, num_tokens)
+        generation = model.generate(input_ids, num_tokens)
     end.record()
 
     torch.cuda.synchronize()
 
     total = start.elapsed_time(end)
 
+    generation = tokenizer.decode(generation[0].tolist())
+
+    print(f"Generation: {generation}")
     print(f"time taken: {total / 1000 / actual_generation:.4f} seconds")
+
+    if os.environ.get("PROFILE", "false").lower() in ("1", "true", "yes"):
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+        ) as prof:
+            _ = model.generate(input_ids, num_tokens)
+            torch.cuda.synchronize()
+
+        events = prof.key_averages()
+
+        for event in events:
+            print(
+                f"{event.key:<24} "
+                f"calls={event.count:<6} "
+                f"CPU total={event.cpu_time_total / 1000:.2f} ms "
+                f"CUDA total={event.device_time_total / 1000:.2f} ms"
+            )
