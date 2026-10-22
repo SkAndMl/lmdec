@@ -6,7 +6,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.profiler import ProfilerActivity, profile, record_function
 
-from lmdec.chat.kernels.rmsnorm import rmsnorm
+from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton
 from lmdec.chat.kernels.swiglu import swiglu
 
 
@@ -103,7 +103,7 @@ class Qwen2RMSNorm(nn.Module):
             and x.dtype == torch.float16
             and x.is_contiguous()
         ):
-            return rmsnorm(
+            return rmsnorm_triton(
                 x,
                 self.weight,
                 self.eps,
