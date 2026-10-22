@@ -65,3 +65,61 @@ def rmsnorm_triton(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -> torch
     )
 
     return output
+
+
+@triton.jit
+def swiglu_kernel(
+    GATE,
+    UP,
+    OUT,
+    N: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+
+    mask = offsets < N
+
+    gate = tl.load(
+        GATE + offsets,
+        mask=mask,
+        other=0.0,
+    ).to(tl.float32)
+    up = tl.load(
+        UP + offsets,
+        mask=mask,
+        other=0.0,
+    ).to(tl.float32)
+
+    out = gate * tl.sigmoid(gate) * up
+
+    tl.store(
+        OUT + offsets,
+        out,
+        mask=mask,
+    )
+
+
+def swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    assert gate.is_cuda and up.is_cuda
+    assert gate.device == up.device
+    assert gate.is_contiguous() and up.is_contiguous()
+
+    out = torch.empty_like(gate)
+
+    N = gate.numel()
+    BLOCK_SIZE = 256
+
+    grid = (triton.cdiv(N, BLOCK_SIZE),)
+
+    swiglu_kernel[grid](
+        GATE=gate,
+        UP=up,
+        OUT=out,
+        N=N,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=4,
+    )
+
+    return out

@@ -6,8 +6,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.profiler import ProfilerActivity, profile, record_function
 
-from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton
-from lmdec.chat.kernels.swiglu import swiglu
+from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton, swiglu_triton
 
 
 @dataclass
@@ -244,7 +243,7 @@ class Qwen2MLP(nn.Module):
         ):
             gate = self.gate_proj(x)
             up = self.up_proj(x)
-            return self.down_proj(swiglu(gate, up))
+            return self.down_proj(swiglu_triton(gate, up))
 
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
