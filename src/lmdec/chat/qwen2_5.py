@@ -4,9 +4,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
-from torch.profiler import ProfilerActivity, profile, record_function
-
-from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton, swiglu_triton
+from torch.profiler import ProfilerActivity, profile
 
 
 @dataclass
@@ -90,18 +88,9 @@ class Qwen2RMSNorm(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
 
-        use_custom_rmsnorm = os.environ.get("USE_CUSTOM_RMSNORM", "false").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        if x.is_cuda and x.dtype == torch.float16 and x.is_contiguous():
+            from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton
 
-        if (
-            use_custom_rmsnorm
-            and x.is_cuda
-            and x.dtype == torch.float16
-            and x.is_contiguous()
-        ):
             return rmsnorm_triton(
                 x,
                 self.weight,
@@ -228,19 +217,14 @@ class Qwen2MLP(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
 
-        use_custom_silu = os.environ.get("USE_CUSTOM_SILU", "false").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-
         if (
-            use_custom_silu
-            and self.act_fn.__name__ == "silu"
+            self.act_fn.__name__ == "silu"
             and x.is_cuda
             and x.dtype == torch.float16
             and x.is_contiguous()
         ):
+            from lmdec.chat.kernels.qwen2_5_kernels import swiglu_triton
+
             gate = self.gate_proj(x)
             up = self.up_proj(x)
             return self.down_proj(swiglu_triton(gate, up))
@@ -266,18 +250,15 @@ class Qwen2DecoderLayer(nn.Module):
         kv_cache: KVCache | None = None,
         cache_pos: int | None = None,
     ) -> Tensor:
-        with record_function("qwen::attn"):
-            attn_out = self.self_attn(
-                x=self.input_layernorm(x),
-                mask=mask,
-                position_embeddings=position_embeddings,
-                kv_cache=kv_cache,
-                cache_pos=cache_pos,
-            )
+        attn_out = self.self_attn(
+            x=self.input_layernorm(x),
+            mask=mask,
+            position_embeddings=position_embeddings,
+            kv_cache=kv_cache,
+            cache_pos=cache_pos,
+        )
         x = x + attn_out
-
-        with record_function("qwen::mlp"):
-            x = x + self.mlp(self.post_attention_layernorm(x))
+        x = x + self.mlp(self.post_attention_layernorm(x))
 
         return x
 
@@ -403,7 +384,12 @@ class Qwen2ForCausalLM(nn.Module):
         return logits, kv_cache
 
     @torch.inference_mode()
-    def generate(self, input_ids: Tensor, max_tokens: int = 20) -> Tensor:
+    def generate(
+        self,
+        input_ids: Tensor,
+        max_tokens: int = 20,
+        eot_token_ids: set[int] = {151643, 151645},  # noqa: B006
+    ) -> Tensor:
 
         if max_tokens == 0:
             return input_ids
@@ -416,12 +402,11 @@ class Qwen2ForCausalLM(nn.Module):
 
         cache_pos = x.shape[-1]
 
-        with record_function("qwen::prefill"):
-            logits, kv_cache = self._prefill(
-                x,
-                position_ids,
-                cache_pos=cache_pos,
-            )
+        logits, kv_cache = self._prefill(
+            x,
+            position_ids,
+            cache_pos=cache_pos,
+        )
 
         next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         x = torch.cat([x, next_token_id], dim=-1).to(x.device)
@@ -432,22 +417,25 @@ class Qwen2ForCausalLM(nn.Module):
         )
         cache_pos += 1
 
-        with record_function("qwen::decode"):
-            for _ in range(max_tokens - 1):
-                logits = self(
-                    input_ids=x[:, -1:],
-                    position_ids=position_ids,
-                    mask=None,
-                    kv_cache=kv_cache,
-                    cache_pos=cache_pos,
-                )
+        for _ in range(max_tokens - 1):
+            logits = self(
+                input_ids=x[:, -1:],
+                position_ids=position_ids,
+                mask=None,
+                kv_cache=kv_cache,
+                cache_pos=cache_pos,
+            )
 
-                next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-                x = torch.cat([x, next_token_id], dim=-1).to(x.device)
-                position_ids = torch.tensor(
-                    [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
-                )
-                cache_pos += 1
+            next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+
+            if next_token_id[0, 0].item() in eot_token_ids:
+                break
+
+            x = torch.cat([x, next_token_id], dim=-1).to(x.device)
+            position_ids = torch.tensor(
+                [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
+            )
+            cache_pos += 1
 
         return x
 
