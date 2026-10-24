@@ -1,5 +1,7 @@
 import os
+import time
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from torch import Tensor, nn
@@ -389,12 +391,20 @@ class Qwen2ForCausalLM(nn.Module):
         input_ids: Tensor,
         max_tokens: int = 20,
         eot_token_ids: set[int] = {151643, 151645},  # noqa: B006
-    ) -> Tensor:
-
-        if max_tokens == 0:
-            return input_ids
+    ) -> dict[str, Any]:
 
         assert len(input_ids) == 1
+
+        output = {
+            "output_tokens": [],
+            "ttft": -1,
+            "total_time": -1,
+            "tpot": -1,
+        }
+
+        if max_tokens == 0:
+            return output
+
         x = input_ids.clone()
         position_ids = torch.arange(
             x.shape[-1], dtype=torch.long, device=x.device
@@ -402,11 +412,18 @@ class Qwen2ForCausalLM(nn.Module):
 
         cache_pos = x.shape[-1]
 
+        start_time = time.perf_counter()
+
         logits, kv_cache = self._prefill(
             x,
             position_ids,
             cache_pos=cache_pos,
         )
+
+        if x.is_cuda:
+            torch.cuda.synchronize()
+
+        output["ttft"] = time.perf_counter() - start_time
 
         next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         x = torch.cat([x, next_token_id], dim=-1).to(x.device)
@@ -437,7 +454,16 @@ class Qwen2ForCausalLM(nn.Module):
             )
             cache_pos += 1
 
-        return x
+        if x.is_cuda:
+            torch.cuda.synchronize()
+
+        output["total_time"] = time.perf_counter() - start_time
+        output["output_tokens"] = x[0].tolist()[len(input_ids[0]) :]
+        output["tpot"] = len(output["output_tokens"]) / (
+            output["total_time"] - output["ttft"]
+        )
+
+        return output
 
     @staticmethod
     @torch.inference_mode()

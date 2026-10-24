@@ -33,14 +33,18 @@ def chat():
         )["input_ids"]
         input_token_ids = torch.tensor([tokens], dtype=torch.long, device=device)
 
-        output_token_ids = model.generate(input_token_ids, max_tokens=256)
+        output = model.generate(input_token_ids, max_tokens=256)
 
         response = tokenizer.decode(
-            output_token_ids[0].tolist()[len(tokens) :],
+            output["output_tokens"],
             skip_special_tokens=True,
         )
 
         print(f"Assistant: {response}")
+        print(
+            f"stats - num_output_tokens: {len(output['output_tokens'])}; ttft: {output['ttft']:.4f};"
+            f" tpot: {output['tpot']:.4f}; total_time: {output['total_time']:.4f}"
+        )
 
         chat_history.append({"role": "assistant", "content": response})
 
