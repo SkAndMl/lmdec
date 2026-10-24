@@ -44,7 +44,7 @@ def rmsnorm_kernel(
 def rmsnorm_triton(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     assert x.is_cuda and w.is_cuda
     assert x.device == w.device
-    assert x.is_contiguous and w.is_contiguous
+    assert x.is_contiguous() and w.is_contiguous()
     assert x.dtype == w.dtype
     assert x.shape[-1] == w.numel()
 
@@ -72,22 +72,25 @@ def swiglu_kernel(
     GATE,
     UP,
     OUT,
-    N: tl.constexpr,
+    H: tl.constexpr,
+    GATE_STRIDE: tl.constexpr,
+    UP_STRIDE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
 
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    row = tl.program_id(0)
+    tile = tl.program_id(1)
 
-    mask = offsets < N
+    cols = tile * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = cols < H
 
     gate = tl.load(
-        GATE + offsets,
+        GATE + row * GATE_STRIDE + cols,
         mask=mask,
         other=0.0,
     ).to(tl.float32)
     up = tl.load(
-        UP + offsets,
+        UP + row * UP_STRIDE + cols,
         mask=mask,
         other=0.0,
     ).to(tl.float32)
@@ -95,7 +98,7 @@ def swiglu_kernel(
     out = gate * tl.sigmoid(gate) * up
 
     tl.store(
-        OUT + offsets,
+        OUT + row * H + cols,
         out,
         mask=mask,
     )
@@ -104,20 +107,22 @@ def swiglu_kernel(
 def swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     assert gate.is_cuda and up.is_cuda
     assert gate.device == up.device
-    assert gate.is_contiguous() and up.is_contiguous()
 
     out = torch.empty_like(gate)
 
-    N = gate.numel()
+    H = gate.shape[-1]
+    num_rows = gate.numel() // H
     BLOCK_SIZE = 256
 
-    grid = (triton.cdiv(N, BLOCK_SIZE),)
+    grid = (num_rows, triton.cdiv(H, BLOCK_SIZE))
 
     swiglu_kernel[grid](
         GATE=gate,
         UP=up,
         OUT=out,
-        N=N,
+        H=H,
+        GATE_STRIDE=gate.stride(-2),
+        UP_STRIDE=up.stride(-2),
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=4,
     )

@@ -43,6 +43,52 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
+def fuse_qkv_weights(cfg: ModelConfig, state_dict: dict[str, Any]):
+    for i in range(cfg.num_layers):
+        prefix = f"model.layers.{i}.self_attn."
+        wt_keys = [f"{prefix}{x}_proj.weight" for x in ["q", "k", "v"]]
+        state_dict[f"model.layers.{i}.self_attn.qkv_proj.weight"] = torch.cat(
+            [state_dict[wt_key] for wt_key in wt_keys],
+            dim=0,
+        )
+
+        for wt_key in wt_keys:
+            state_dict.pop(wt_key)
+
+        if cfg.attn_bias:
+            bias_keys = [f"{prefix}{x}_proj.bias" for x in ["q", "k", "v"]]
+            state_dict[f"model.layers.{i}.self_attn.qkv_proj.bias"] = torch.cat(
+                [state_dict[bias_key] for bias_key in bias_keys],
+                dim=0,
+            )
+
+            for bias_key in bias_keys:
+                state_dict.pop(bias_key)
+
+
+def fuse_mlp_weights(cfg: ModelConfig, state_dict: dict[str, Any]):
+    for i in range(cfg.num_layers):
+        prefix = f"model.layers.{i}.mlp."
+        wt_keys = [f"{prefix}{x}_proj.weight" for x in ["gate", "up"]]
+        state_dict[f"model.layers.{i}.mlp.gate_up_proj.weight"] = torch.cat(
+            [state_dict[wt_key] for wt_key in wt_keys],
+            dim=0,
+        )
+
+        for wt_key in wt_keys:
+            state_dict.pop(wt_key)
+
+        if cfg.mlp_bias:
+            bias_keys = [f"{prefix}{x}_proj.bias" for x in ["gate", "up"]]
+            state_dict[f"model.layers.{i}.mlp.gate_up_proj.bias"] = torch.cat(
+                [state_dict[bias_key] for bias_key in bias_keys],
+                dim=0,
+            )
+
+            for bias_key in bias_keys:
+                state_dict.pop(bias_key)
+
+
 class Qwen2RotaryEmbedding(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -212,12 +258,27 @@ class Qwen2MLP(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
 
-        self.gate_proj = nn.Linear(cfg.model_dim, cfg.intermediate_size, cfg.mlp_bias)
-        self.up_proj = nn.Linear(cfg.model_dim, cfg.intermediate_size, cfg.mlp_bias)
+        self.cfg = cfg
+
+        self.gate_up_proj = nn.Linear(
+            cfg.model_dim,
+            cfg.intermediate_size * 2,
+            cfg.mlp_bias,
+        )
+
         self.down_proj = nn.Linear(cfg.intermediate_size, cfg.model_dim, cfg.mlp_bias)
         self.act_fn = F.silu
 
     def forward(self, x: Tensor) -> Tensor:
+
+        gate_up_fused: Tensor = self.gate_up_proj(x)  # b, t, intermediate_size * 2
+        gate, up = gate_up_fused.split(
+            split_size=[
+                self.cfg.intermediate_size,
+                self.cfg.intermediate_size,
+            ],
+            dim=2,
+        )
 
         if (
             self.act_fn.__name__ == "silu"
@@ -227,11 +288,9 @@ class Qwen2MLP(nn.Module):
         ):
             from lmdec.chat.kernels.qwen2_5_kernels import swiglu_triton
 
-            gate = self.gate_proj(x)
-            up = self.up_proj(x)
             return self.down_proj(swiglu_triton(gate, up))
 
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return self.down_proj(self.act_fn(gate) * up)
 
 
 class Qwen2DecoderLayer(nn.Module):
@@ -459,8 +518,8 @@ class Qwen2ForCausalLM(nn.Module):
 
         output["total_time"] = time.perf_counter() - start_time
         output["output_tokens"] = x[0].tolist()[len(input_ids[0]) :]
-        output["tpot"] = len(output["output_tokens"]) / (
-            output["total_time"] - output["ttft"]
+        output["tpot"] = (output["total_time"] - output["ttft"]) / len(
+            output["output_tokens"]
         )
 
         return output
@@ -508,26 +567,8 @@ class Qwen2ForCausalLM(nn.Module):
         model = Qwen2ForCausalLM(cfg)
         state_dict = AutoModelForCausalLM.from_pretrained(cfg.model_id).state_dict()
 
-        for i in range(cfg.num_layers):
-            prefix = f"model.layers.{i}.self_attn."
-            wt_keys = [f"{prefix}{x}_proj.weight" for x in ["q", "k", "v"]]
-            state_dict[f"model.layers.{i}.self_attn.qkv_proj.weight"] = torch.cat(
-                [state_dict[wt_key] for wt_key in wt_keys],
-                dim=0,
-            )
-
-            for wt_key in wt_keys:
-                state_dict.pop(wt_key)
-
-            if cfg.attn_bias:
-                bias_keys = [f"{prefix}{x}_proj.bias" for x in ["q", "k", "v"]]
-                state_dict[f"model.layers.{i}.self_attn.qkv_proj.bias"] = torch.cat(
-                    [state_dict[bias_key] for bias_key in bias_keys],
-                    dim=0,
-                )
-
-                for bias_key in bias_keys:
-                    state_dict.pop(bias_key)
+        fuse_qkv_weights(cfg, state_dict)
+        fuse_mlp_weights(cfg, state_dict)
 
         model.load_state_dict(state_dict)
 
@@ -537,8 +578,8 @@ class Qwen2ForCausalLM(nn.Module):
 if __name__ == "__main__":
     from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-    model_id = "Qwen/Qwen2.5-0.5B"
-    num_tokens = 128
+    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    num_tokens = 64
     warmup_steps = int(os.environ.get("WARMUP_STEPS", "2"))
     actual_generation = 5
 
@@ -552,7 +593,7 @@ if __name__ == "__main__":
     print(f"dtype: {dtype}")
 
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_id)
-    cfg = ModelConfig(dtype=dtype)
+    cfg = ModelConfig(model_id=model_id, dtype=dtype)
 
     model = Qwen2ForCausalLM.from_pretrained(cfg)
     model.to(device)
@@ -562,7 +603,7 @@ if __name__ == "__main__":
     input_ids = torch.tensor([tokens], dtype=torch.long).to(device)
 
     for _ in range(warmup_steps):
-        _ = model.generate(input_ids, num_tokens)
+        _ = model.generate(input_ids, num_tokens, eot_token_ids=set())
 
     torch.cuda.synchronize()
 
@@ -575,14 +616,14 @@ if __name__ == "__main__":
 
     start.record()
     for _ in range(actual_generation):
-        generation = model.generate(input_ids, num_tokens)
+        output = model.generate(input_ids, num_tokens, eot_token_ids=set())
     end.record()
 
     torch.cuda.synchronize()
 
     total = start.elapsed_time(end)
 
-    generation = tokenizer.decode(generation[0].tolist())
+    generation = tokenizer.decode(output["output_tokens"])
 
     print(f"Generation: {generation}")
     print(f"time taken: {total / 1000 / actual_generation:.4f} seconds")
@@ -592,16 +633,27 @@ if __name__ == "__main__":
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             record_shapes=True,
             profile_memory=True,
+            with_stack=True,
         ) as prof:
-            _ = model.generate(input_ids, num_tokens)
+            _ = model.generate(input_ids, num_tokens, eot_token_ids=set())
             torch.cuda.synchronize()
 
-        events = prof.key_averages()
+        events = prof.key_averages(group_by_input_shape=True)
 
-        for event in events:
+        rows = sorted(
+            (e for e in events if e.key.startswith("aten::")),
+            key=lambda e: e.self_device_time_total,
+            reverse=True,
+        )
+
+        print(f"{'Name':<35} {'Calls':>7} {'GPU ms':>10} {'CPU ms':>10}  Shapes")
+
+        for e in rows:
+            shapes = str(e.input_shapes) if e.input_shapes else "-"
             print(
-                f"{event.key:<24} "
-                f"calls={event.count:<6} "
-                f"CPU total={event.cpu_time_total / 1000:.2f} ms "
-                f"CUDA total={event.device_time_total / 1000:.2f} ms"
+                f"{e.key:<35} {e.count:>7} "
+                f"{e.self_device_time_total / 1000:>10.3f} "
+                f"{e.self_cpu_time_total / 1000:>10.3f}  {shapes}"
             )
+
+        prof.export_chrome_trace("qwen-trace.json")
