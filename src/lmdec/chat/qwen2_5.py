@@ -220,35 +220,13 @@ class Qwen2Attention(nn.Module):
 
             k, v = kv_cache.k[:, :, :cache_pos, :], kv_cache.v[:, :, :cache_pos, :]
 
-        kv_repeats = self.attn_heads // self.kv_heads
-
-        attn_k = k.repeat_interleave(kv_repeats, dim=1)
-        attn_v = v.repeat_interleave(kv_repeats, dim=1)
-
-        attn_scores: Tensor = (
-            q @ attn_k.transpose(2, 3) / (self.head_dim**0.5)
-        )  # b, q_h, t, t
-
-        if kv_cache is not None and kv_cache.prefill:
-            attention_mask = torch.ones(t, t, device=x.device, dtype=torch.bool).triu(1)
-            if mask is not None:
-                if mask.ndim == 3:
-                    mask = mask.unsqueeze(1)
-
-                attention_mask = attention_mask | mask
-
-            attn_scores.masked_fill_(attention_mask, value=float("-inf"))
-
-        attn_weights = F.softmax(
-            attn_scores,
-            dim=-1,
-            dtype=torch.float32,
-        ).to(q.dtype)
-        out = (
-            (attn_weights @ attn_v)
-            .transpose(1, 2)
-            .contiguous()
-            .view(b, t, self.head_dim * self.attn_heads)
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=0.0,
+            is_causal=kv_cache.prefill,
+            enable_gqa=True,
         )
 
         return self.o_proj(out)
@@ -523,42 +501,6 @@ class Qwen2ForCausalLM(nn.Module):
         )
 
         return output
-
-    @staticmethod
-    @torch.inference_mode()
-    def check(cfg: ModelConfig):
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoTokenizer,
-            PreTrainedTokenizerBase,
-        )
-
-        tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(cfg.model_id)
-
-        hf = AutoModelForCausalLM.from_pretrained(
-            cfg.model_id,
-            attn_implementation="eager",
-        )
-        ours = Qwen2ForCausalLM.from_pretrained(cfg)
-
-        hf.eval()
-        ours.eval()
-
-        input_ids: Tensor = tokenizer(
-            "The capital of France is",
-            return_tensors="pt",
-        ).input_ids
-
-        hf_logits: Tensor = hf(input_ids).logits
-        our_logits = ours(input_ids)
-
-        print("max diff:", (hf_logits - our_logits).abs().max())
-        print(
-            "HF:",
-            hf_logits[:, -1].argmax(-1),
-            "ours:",
-            our_logits[:, -1].argmax(-1),
-        )
 
     @staticmethod
     def from_pretrained(cfg: ModelConfig) -> "Qwen2ForCausalLM":
