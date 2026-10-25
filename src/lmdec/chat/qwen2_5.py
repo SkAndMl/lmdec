@@ -31,7 +31,6 @@ class ModelConfig:
 class KVCache:
     k: torch.Tensor
     v: torch.Tensor
-    prefill: bool
 
 
 def rotate_half(x):
@@ -89,6 +88,13 @@ def fuse_mlp_weights(cfg: ModelConfig, state_dict: dict[str, Any]):
                 state_dict.pop(bias_key)
 
 
+def build_mask(position_ids: Tensor, cache_len: int) -> Tensor:
+    # position_ids -> 1, T
+    slots = torch.arange(cache_len, device=position_ids.device)  # S
+    mask = slots[None, :] <= position_ids[0][:, None]  # T, S
+    return mask[None, None]
+
+
 class Qwen2RotaryEmbedding(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -136,7 +142,12 @@ class Qwen2RMSNorm(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
 
-        if x.is_cuda and x.dtype == torch.float16 and x.is_contiguous():
+        if (
+            not torch.compiler.is_compiling()
+            and x.is_cuda
+            and x.dtype == torch.float16
+            and x.is_contiguous()
+        ):
             from lmdec.chat.kernels.qwen2_5_kernels import rmsnorm_triton
 
             return rmsnorm_triton(
@@ -176,11 +187,12 @@ class Qwen2Attention(nn.Module):
         self,
         *,
         x: Tensor,
-        mask: Tensor | None = None,
-        position_embeddings: Tensor | None = None,
-        cache_pos: int | None = None,  # b,
-        kv_cache: KVCache | None = None,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        position_embeddings: Tensor,
+        kv_cache: KVCache,
     ) -> Tensor:
+
         b, t, _ = x.shape
 
         qkv: Tensor = self.qkv_proj(x)  # b, t, head_dim * (q_h + 2*kv_h)
@@ -207,26 +219,22 @@ class Qwen2Attention(nn.Module):
         q, curr_k = apply_rope(q, curr_k, cos, sin)
 
         k, v = curr_k, curr_v
-        if kv_cache is not None:
-            if cache_pos is None:
-                raise RuntimeError("kv_cache is not None but cache_pos is")
 
-            if kv_cache.prefill:
-                kv_cache.k[:, :, :cache_pos, :] = k
-                kv_cache.v[:, :, :cache_pos, :] = v
-            else:
-                kv_cache.k[:, :, cache_pos - 1 : cache_pos, :] = k
-                kv_cache.v[:, :, cache_pos - 1 : cache_pos, :] = v
+        kv_cache.k.index_copy_(2, position_ids[0], k)
+        kv_cache.v.index_copy_(2, position_ids[0], v)
 
-            k, v = kv_cache.k[:, :, :cache_pos, :], kv_cache.v[:, :, :cache_pos, :]
+        k, v = kv_cache.k, kv_cache.v
 
         out = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
+            query=q,
+            key=k,
+            value=v,
             dropout_p=0.0,
-            is_causal=kv_cache.prefill,
+            attn_mask=attention_mask,
             enable_gqa=True,
+        )
+        out = (
+            out.transpose(1, 2).contiguous().view(b, t, self.head_dim * self.attn_heads)
         )
 
         return self.o_proj(out)
@@ -260,13 +268,15 @@ class Qwen2MLP(nn.Module):
 
         if (
             self.act_fn.__name__ == "silu"
+            and not torch.compiler.is_compiling()
             and x.is_cuda
             and x.dtype == torch.float16
             and x.is_contiguous()
         ):
             from lmdec.chat.kernels.qwen2_5_kernels import swiglu_triton
 
-            return self.down_proj(swiglu_triton(gate, up))
+            act = swiglu_triton(gate, up)
+            return self.down_proj(act)
 
         return self.down_proj(self.act_fn(gate) * up)
 
@@ -284,17 +294,17 @@ class Qwen2DecoderLayer(nn.Module):
         self,
         *,
         x: Tensor,
-        mask: Tensor | None = None,
-        position_embeddings: Tensor | None = None,
-        kv_cache: KVCache | None = None,
-        cache_pos: int | None = None,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        position_embeddings: Tensor,
+        kv_cache: KVCache,
     ) -> Tensor:
         attn_out = self.self_attn(
             x=self.input_layernorm(x),
-            mask=mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             position_embeddings=position_embeddings,
             kv_cache=kv_cache,
-            cache_pos=cache_pos,
         )
         x = x + attn_out
         x = x + self.mlp(self.post_attention_layernorm(x))
@@ -317,28 +327,21 @@ class Qwen2Model(nn.Module):
         self,
         *,
         input_ids: Tensor,
-        position_ids: Tensor | None = None,
-        mask: Tensor | None = None,
-        kv_cache: dict[int, KVCache] | None = None,
-        cache_pos: int | None = None,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        kv_cache: dict[int, KVCache],
     ) -> Tensor:
-
-        if position_ids is None:
-            position_ids = torch.arange(input_ids.shape[1], device=torch.long)[None, :]
 
         x = self.embed_tokens(input_ids)
         position_embeddings = self.rotary_emb(x, position_ids)
 
         for i, layer in enumerate(self.layers):
-            layer_kv_cache = None
-            if kv_cache is not None:
-                layer_kv_cache = kv_cache[i]
             x = layer(
                 x=x,
-                mask=mask,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
                 position_embeddings=position_embeddings,
-                kv_cache=layer_kv_cache,
-                cache_pos=cache_pos,
+                kv_cache=kv_cache[i],
             )
 
         return self.norm(x)
@@ -363,74 +366,67 @@ class Qwen2ForCausalLM(nn.Module):
     def forward(
         self,
         input_ids: Tensor,
-        position_ids: Tensor | None = None,
-        mask: Tensor | None = None,
-        kv_cache: dict[int, KVCache] | None = None,
-        cache_pos: int | None = None,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        kv_cache: dict[int, KVCache],
     ) -> Tensor:
         x = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
-            mask=mask,
+            attention_mask=attention_mask,
             kv_cache=kv_cache,
-            cache_pos=cache_pos,
         )
         return self.lm_head(x)
 
     def _prefill(
         self,
         x: Tensor,
-        position_ids: Tensor | None = None,
-        cache_pos: int | None = None,
-    ) -> tuple[Tensor, dict[int, KVCache]]:
+        position_ids: Tensor,
+        kv_cache: dict[int, KVCache],
+    ) -> Tensor:
 
-        b, t = x.shape
-        if t > self.cfg.max_position_embeddings:
-            raise ValueError()
-
-        cache_length = t + 1024
-        cache_tensor_shape = (
-            b,
-            self.cfg.num_key_value_heads,
-            cache_length,
-            self.cfg.model_dim // self.cfg.num_attention_heads,
-        )
-
-        kv_cache = {
-            layer: KVCache(
-                k=torch.empty(
-                    size=cache_tensor_shape, device=x.device, dtype=self.cfg.dtype
-                ),
-                v=torch.empty(
-                    size=cache_tensor_shape, device=x.device, dtype=self.cfg.dtype
-                ),
-                prefill=True,
-            )
-            for layer in range(self.cfg.num_layers)
-        }
+        attention_mask = build_mask(position_ids, kv_cache[0].k.shape[-2])
 
         logits = self(
             input_ids=x,
             position_ids=position_ids,
-            mask=None,
+            attention_mask=attention_mask,
             kv_cache=kv_cache,
-            cache_pos=cache_pos,
         )
 
-        for layer in range(self.cfg.num_layers):
-            kv_cache[layer].prefill = False
+        return logits
 
-        return logits, kv_cache
+    def _decode(
+        self,
+        x: Tensor,
+        position_ids: Tensor,
+        kv_cache: dict[int, KVCache],
+    ) -> Tensor:
+
+        attention_mask = build_mask(position_ids, kv_cache[0].k.shape[-2])
+
+        logits: Tensor = self(
+            input_ids=x,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            kv_cache=kv_cache,
+        )
+
+        return logits[:, -1, :].argmax(dim=-1, keepdim=True)
 
     @torch.inference_mode()
     def generate(
         self,
         input_ids: Tensor,
+        kv_cache: dict[int, KVCache],
         max_tokens: int = 20,
         eot_token_ids: set[int] = {151643, 151645},  # noqa: B006
     ) -> dict[str, Any]:
 
         assert len(input_ids) == 1
+
+        if input_ids.shape[-1] > self.cfg.max_position_embeddings:
+            raise ValueError()
 
         output = {
             "output_tokens": [],
@@ -447,14 +443,12 @@ class Qwen2ForCausalLM(nn.Module):
             x.shape[-1], dtype=torch.long, device=x.device
         ).unsqueeze(0)
 
-        cache_pos = x.shape[-1]
-
         start_time = time.perf_counter()
 
-        logits, kv_cache = self._prefill(
+        logits = self._prefill(
             x,
             position_ids,
-            cache_pos=cache_pos,
+            kv_cache=kv_cache,
         )
 
         if x.is_cuda:
@@ -469,27 +463,19 @@ class Qwen2ForCausalLM(nn.Module):
             dtype=torch.long,
             device=x.device,
         )
-        cache_pos += 1
 
         for _ in range(max_tokens - 1):
-            logits = self(
-                input_ids=x[:, -1:],
-                position_ids=position_ids,
-                mask=None,
-                kv_cache=kv_cache,
-                cache_pos=cache_pos,
+            next_token_id = self._decode(
+                x[:, -1:],
+                position_ids,
+                kv_cache,
             )
-
-            next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
 
             if next_token_id[0, 0].item() in eot_token_ids:
                 break
 
             x = torch.cat([x, next_token_id], dim=-1).to(x.device)
-            position_ids = torch.tensor(
-                [[x.shape[-1] - 1]], dtype=torch.long, device=x.device
-            )
-            cache_pos += 1
+            position_ids += 1
 
         if x.is_cuda:
             torch.cuda.synchronize()
@@ -540,12 +526,34 @@ if __name__ == "__main__":
     model = Qwen2ForCausalLM.from_pretrained(cfg)
     model.to(device)
 
+    model._decode = torch.compile(model._decode, mode="reduce-overhead", fullgraph=True)
+
+    cache_length = 4096
+    cache_tensor_shape = (
+        1,
+        cfg.num_key_value_heads,
+        cache_length,
+        cfg.model_dim // cfg.num_attention_heads,
+    )
+
+    kv_cache = {
+        layer: KVCache(
+            k=torch.zeros(size=cache_tensor_shape, device=device, dtype=cfg.dtype),
+            v=torch.zeros(size=cache_tensor_shape, device=device, dtype=cfg.dtype),
+        )
+        for layer in range(cfg.num_layers)
+    }
+
+    for c in kv_cache.values():
+        torch._dynamo.mark_static_address(c.k)
+        torch._dynamo.mark_static_address(c.v)
+
     text = "The world is a"
     tokens = tokenizer.encode(text)
     input_ids = torch.tensor([tokens], dtype=torch.long).to(device)
 
     for _ in range(warmup_steps):
-        _ = model.generate(input_ids, num_tokens, eot_token_ids=set())
+        _ = model.generate(input_ids, kv_cache, num_tokens, eot_token_ids=set())
 
     torch.cuda.synchronize()
 
@@ -558,7 +566,7 @@ if __name__ == "__main__":
 
     start.record()
     for _ in range(actual_generation):
-        output = model.generate(input_ids, num_tokens, eot_token_ids=set())
+        output = model.generate(input_ids, kv_cache, num_tokens, eot_token_ids=set())
     end.record()
 
     torch.cuda.synchronize()
@@ -577,20 +585,33 @@ if __name__ == "__main__":
             profile_memory=True,
             with_stack=True,
         ) as prof:
-            _ = model.generate(input_ids, num_tokens, eot_token_ids=set())
+            _ = model.generate(input_ids, kv_cache, num_tokens, eot_token_ids=set())
             torch.cuda.synchronize()
 
         events = prof.key_averages(group_by_input_shape=True)
 
         rows = sorted(
-            (e for e in events if e.key.startswith("aten::")),
-            key=lambda e: e.self_device_time_total,
+            (
+                e
+                for e in events
+                if not e.key.startswith(
+                    (
+                        "aten::",
+                        "cuda",
+                        "void",
+                        "ampere",
+                        "sm",
+                        "std::",
+                    )
+                )
+            ),
+            key=lambda e: e.device_time_total,
             reverse=True,
         )
 
         print(f"{'Name':<35} {'Calls':>7} {'GPU ms':>10} {'CPU ms':>10}  Shapes")
 
-        for e in rows:
+        for e in rows[:30]:
             shapes = str(e.input_shapes) if e.input_shapes else "-"
             print(
                 f"{e.key:<35} {e.count:>7} "
