@@ -419,6 +419,7 @@ class Qwen2ForCausalLM(nn.Module):
         self,
         input_ids: Tensor,
         kv_cache: dict[int, KVCache],
+        cached_len: int,
         max_tokens: int = 20,
         eot_token_ids: set[int] = {151643, 151645},  # noqa: B006
     ) -> dict[str, Any]:
@@ -427,6 +428,8 @@ class Qwen2ForCausalLM(nn.Module):
 
         if input_ids.shape[-1] > self.cfg.max_position_embeddings:
             raise ValueError()
+
+        print(f"cached_len: {cached_len}, input_len: {input_ids.shape[-1]}")
 
         output = {
             "output_tokens": [],
@@ -440,13 +443,13 @@ class Qwen2ForCausalLM(nn.Module):
 
         x = input_ids.clone()
         position_ids = torch.arange(
-            x.shape[-1], dtype=torch.long, device=x.device
+            cached_len, x.shape[-1], dtype=torch.long, device=x.device
         ).unsqueeze(0)
 
         start_time = time.perf_counter()
 
         logits = self._prefill(
-            x,
+            x[:, cached_len:],
             position_ids,
             kv_cache=kv_cache,
         )
@@ -588,35 +591,21 @@ if __name__ == "__main__":
             _ = model.generate(input_ids, kv_cache, num_tokens, eot_token_ids=set())
             torch.cuda.synchronize()
 
-        events = prof.key_averages(group_by_input_shape=True)
+        events = prof.key_averages()
 
-        rows = sorted(
-            (
-                e
-                for e in events
-                if not e.key.startswith(
-                    (
-                        "aten::",
-                        "cuda",
-                        "void",
-                        "ampere",
-                        "sm",
-                        "std::",
-                    )
-                )
-            ),
-            key=lambda e: e.device_time_total,
-            reverse=True,
+        total_gpu = sum(e.self_device_time_total for e in events)
+
+        rows = sorted(events, key=lambda e: e.self_device_time_total, reverse=True)
+
+        print(
+            f"{'Name':<60} {'Calls':>6} {'GPU self ms':>12} {'GPU %':>7} {'GPU avg us':>11}"
         )
 
-        print(f"{'Name':<35} {'Calls':>7} {'GPU ms':>10} {'CPU ms':>10}  Shapes")
-
-        for e in rows[:30]:
-            shapes = str(e.input_shapes) if e.input_shapes else "-"
+        for e in rows[:25]:
             print(
-                f"{e.key:<35} {e.count:>7} "
-                f"{e.self_device_time_total / 1000:>10.3f} "
-                f"{e.self_cpu_time_total / 1000:>10.3f}  {shapes}"
+                f"{e.key[:60]:<60} "
+                f"{e.count:>6} "
+                f"{e.self_device_time_total / 1000:>12.3f} "
+                f"{100 * e.self_device_time_total / total_gpu:>6.1f}% "
+                f"{e.self_device_time_total / e.count:>11.1f}"
             )
-
-        prof.export_chrome_trace("qwen-trace.json")
