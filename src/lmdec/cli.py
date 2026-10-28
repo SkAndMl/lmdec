@@ -2,6 +2,7 @@ import argparse
 
 from lmdec.analyze import AnalyseArgs, get_analyze_parser
 from lmdec.analyze import run as run_analyze
+from lmdec.chat import CHAT_SUPPORTED_MODELS, chat, get_chat_parser
 from lmdec.model_families.base import Workload
 
 
@@ -12,6 +13,8 @@ def main():
     _ = subparsers.add_parser(
         "analyze", parents=[get_analyze_parser()], help="Run analyze"
     )
+
+    _ = subparsers.add_parser("chat", parents=[get_chat_parser()], help="Run chat")
 
     args = p.parse_args()
 
@@ -30,5 +33,10 @@ def main():
                 )
             )
 
+        case "chat":
+            if args.model_id not in CHAT_SUPPORTED_MODELS:
+                print(f"{args.model_id} not supported currently")
+                return
+            chat()
         case _:
             raise ValueError(f"Unrecognized subcommand: {args.command}")

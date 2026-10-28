@@ -429,8 +429,6 @@ class Qwen2ForCausalLM(nn.Module):
         if input_ids.shape[-1] > self.cfg.max_position_embeddings:
             raise ValueError()
 
-        print(f"cached_len: {cached_len}, input_len: {input_ids.shape[-1]}")
-
         output = {
             "output_tokens": [],
             "ttft": -1,

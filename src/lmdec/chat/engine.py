@@ -56,6 +56,12 @@ def chat():
         if user_message == "/exit":
             break
 
+        if user_message == "/reset":
+            cached_len = 0
+            chat_history = [{"role": "system", "content": system_prompt}]
+            print("Context cleared")
+            continue
+
         chat_history.append({"role": "user", "content": user_message})
 
         tokens = tokenizer.apply_chat_template(
